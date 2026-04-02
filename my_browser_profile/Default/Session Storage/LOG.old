@@ -1,0 +1,11 @@
+2026/04/01-16:56:31.183 3b78 Reusing MANIFEST E:\pyproject\my_browser_profile\Default\Session Storage/MANIFEST-000001
+2026/04/01-16:56:31.184 3b78 Recovering log #3
+2026/04/01-16:56:31.184 3b78 Level-0 table #3: started
+2026/04/01-16:56:31.189 3b78 Level-0 table #3: 19066 bytes OK
+2026/04/01-16:56:31.190 3b78 Recovering log #4
+2026/04/01-16:56:31.191 3b78 Reusing old log E:\pyproject\my_browser_profile\Default\Session Storage/000004.log 
+2026/04/01-16:56:31.194 3b78 Delete type=0 #3
+2026/04/01-16:56:31.194 3b78 Delete type=2 #5
+2026/04/01-16:57:55.258 8ccc Level-0 table #6: started
+2026/04/01-16:57:55.272 8ccc Level-0 table #6: 19180 bytes OK
+2026/04/01-16:57:55.274 8ccc Delete type=0 #4
