@@ -1,0 +1,6 @@
+2026/04/14-14:55:48.795 9c0c Reusing MANIFEST E:\pyproject\my_profile\Default\Session Storage/MANIFEST-000001
+2026/04/14-14:55:48.796 9c0c Recovering log #304
+2026/04/14-14:55:48.798 9c0c Reusing old log E:\pyproject\my_profile\Default\Session Storage/000304.log 
+2026/04/14-14:56:49.095 9c0c Level-0 table #309: started
+2026/04/14-14:56:49.100 9c0c Level-0 table #309: 19336 bytes OK
+2026/04/14-14:56:49.102 9c0c Delete type=0 #304

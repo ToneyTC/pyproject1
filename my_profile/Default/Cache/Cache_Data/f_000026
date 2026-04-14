@@ -1,0 +1,778 @@
+var mainPage = 'main.htm';
+//登录成功后转向的页面
+function Login() {
+}
+
+Login.prototype = {
+    loginWeb :function() {
+        var that = this;
+        var username = $('#username');
+        var password = $('#password');
+        var usernameValue = $.trim(username.val());
+        var passwordValue = $.trim(password.val());
+        if(usernameValue === ""){
+            that.setTip(Resource["eg.login.pleaseEnterUsernameTip"],"username");
+            return false;
+        }
+        if(passwordValue === ""){
+            that.setTip(Resource["eg.login.pleaseEnterPassTip"],"password");
+            return false;
+        }
+        $("#login").attr("disabled",true);
+        $("#login").text(Resource["eg.login.isLogining"]);
+        var encrypt = new JSEncrypt.JSEncrypt();
+        encrypt.setPublicKey(that.pubLicKey);
+        that.encPassword = encrypt.encrypt(passwordValue);
+        $.ajax({
+            dataType: 'json',
+            type: 'post',
+            async: false,
+            url: "/login.php",
+            data: {
+                "username":GibberishAES.enc(usernameValue, 'RjYkhwzx\$2018!').replace(/\s+/g, ''),
+                "password":that.encPassword
+            },
+            success: function (data) {
+                $.cookie('isRedirect', "true");
+                if (data.status === 1 || data.status === true) {
+                    if(!data.result){//底层返回null，当初code == 6处理
+                        that.cycleLogin(usernameValue,passwordValue);
+                    }
+                    if (data.result.code !== undefined && (data.result.code == 0 || data.result.code == 3)) {//登录成功
+                        if(data.result.code == 3){
+                            alert(Resource["eg.login.passwordTooLow"]);
+                        };
+                        if(data.result.privilege>13){
+                            that.accountType = "write";
+                        }else{
+                            that.accountType = "read";
+                        }
+                        that.authenType = data.result.authen;
+                        that.loginValidSucc(usernameValue,passwordValue);
+                    } else if (data.result.code == 6){//等待结果, 用另一个命令查询结果.底层旧返回一个字符6
+                        that.cycleLogin(usernameValue,passwordValue);
+                    }else if (data.result.code == 4 || data.result.code == 2 || data.result.code == 1){//登录失败
+                        if(!!data.result["lock-time-left"]){
+                            $("#loginErrorTip").html(Resource["eg.login.loginfailExceeded"]+data.result["lock-time-left"]+Resource["eg.login.trytoLoginAgain"]);
+                        }else if(!!data.result["error-cnt-left"]){
+                            $("#loginErrorTip").html(Resource["eg.login.loginErrorHaveleft"]+data.result["error-cnt-left"]+Resource["eg.login.trialChanceLogin"]);
+                        } else{
+                            $("#loginErrorTip").html(Resource["eg.login.loginFail"]);
+                        }
+                        $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                    }else if (data.result.code == 5){
+                        $("#loginErrorTip").html(Resource["eg.login.loginUserLimit"]);
+                        $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                    }else{
+                        $("#loginErrorTip").html(Resource["eg.login.loginFail"]);
+                        $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                    }
+                } else if (data.status === 5) {//用户名或密码不能为空
+                    that.setTip(Resource["eg.login.usernameOrPassNull"],"username");
+                    $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                }  else if (data.status === 7) {//账号密码不能同时为manager或者guest
+                    that.setTip(Resource["eg.login.contactAdministratorChange"],"username");
+                    $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                } else {//其他错误
+                    that.setTip(Resource["eg.login.loginFailerror"]);
+                    $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                }
+            },
+            error: function () {
+                that.setTip(Resource["eg.login.loginfailNetworkInterruption"],"username");
+                $('#login').html(Resource["eg.login.loginText"])[0].disabled = false;
+            }
+        });
+        return false;
+    },
+    showCheckDialog:function() {
+        var that = this;
+        that.noNeedCheck = false;
+        if(!that.initCheckDb) {
+            that.initCheckDb = rui.Dialog.open({
+                content:Resource["eg.login.systemIsloading"],
+                title: Resource["eg.login.loginText"],
+                width:450,
+                height:130,
+                allowClose:false,
+                show: true,
+                buttons: [
+                    {
+                        type:"ok",
+                        text:Resource["eg.login.detectLoadingProgress"],
+                        onclick: function (item, dialog) {
+                            that.initCheckDb.hide();
+                            that.isChecking = true;
+                            that._starLoader(Resource["eg.login.systemLoading10"]);
+                            window.setTimeout(function(){
+                                that.intervalidCheckDb = setInterval(function(){
+                                    that.checkStatus();
+                                }, 5000); //11.x需要重新授权
+                            }, 1000);
+                        }
+                    },
+                    {
+                        type:"cancel",
+                        text:Resource["eg.login.directLogin"],
+                        onclick: function (item, dialog) {
+                            that.initCheckDb.hide();
+                            that.noNeedCheck = true;
+                            that.loginWeb();
+                        }
+                    }
+                ],
+                closeWindowEvent: function(){
+
+                }
+            });
+        } else {
+            that.initCheckDb.show();
+        }
+    },
+    checkStatus: function () {
+        var that = this;
+        if(that.isChecking) {
+            that.checkNum += 1;
+            var num = parseInt(Math.round(that.checkNum / 70 * 10000) / 100);
+            num = num + 10;
+            if(num>100){
+                num = 100;
+            }
+            that._starLoader(Resource["eg.login.featureLibraryIsloading"] + num + "%");
+        }
+        if(that.isChecking && that.checkNum>71){
+            alert(Resource["eg.login.detectionCompleted"]);
+            self.noNeedCheck = true;
+            that.loader && that.loader.loadComplete();
+            window.clearInterval(that.intervalidCheckDb);
+            return false;
+        }
+        var ajaxTimeOut = $.ajax({
+            type: 'post',
+            url: "/login.php?a=getIdversion",
+            timeout: 2000,
+            success: function (data){
+                if(data.data.toString().indexOf("Version:20")>-1){
+                    if(that.isChecking){
+                        that._starLoader(Resource["eg.login.systemLoadingCompleted"]);
+                        setTimeout(function(){
+                            that.loader && that.loader.loadComplete();
+                            window.clearInterval(that.intervalidCheckDb);
+                            alert(Resource["eg.login.pleaseLoginAgain"]);
+                        },1000)
+                    }else{
+                        that.loginWeb();
+                    }
+                }else{
+                    if(!that.isChecking){
+                        that.showCheckDialog();
+                    }
+                }
+            },
+            complete : function(XMLHttpRequest,status){ //请求完成后最终执行参数
+                if(status=='timeout'){//超时,status还有success,error等值的情况
+                    if(!that.isChecking){
+                        that.showCheckDialog();
+                    }
+                    ajaxTimeOut.abort();
+                }
+            }
+        })
+    },
+    cycleLogin:function (usernameValue,passwordValue) {
+        var that = this;
+        var pcIp = that.pcIp;
+        CLI.post("/login.php?a=cycleLogin",{
+            "username":GibberishAES.enc(usernameValue, 'RjYkhwzx\$2018!').replace(/\s+/g, ''),
+            "password":that.encPassword,
+            "hostip":pcIp
+        },function (res){
+            if(!!res){
+                var data = $.parseJSON(res);
+                if(data.msg == "success"){
+                    if(!!data.privilege && data.privilege>13){
+                        that.accountType = "write";
+                    }else{
+                        that.accountType = "read";
+                    }
+                    that.authenType = data.authen;
+                    that.loginValidSucc(usernameValue,passwordValue);
+                }else if(data.msg == "wait"){
+                    setTimeout(function () {
+                        that.cycleLogin(usernameValue,passwordValue);
+                    },1000)
+                }else if(data.msg == "locked"){
+                    alert(Resource["eg.login.accountIslocked"]);
+                    $("#loginErrorTip").html(Resource["eg.login.loginFail"]);
+                    $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                }else if(data.msg == "limit error"){
+                    alert(Resource["eg.login.loginUserLimit"]);
+                    $("#loginErrorTip").html(Resource["eg.login.loginFail"]);
+                    $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                }else if(data.msg == "aaa reject"){
+                    alert(Resource["eg.login.accountPassError"]);
+                    $("#loginErrorTip").html(Resource["eg.login.loginFail"]);
+                    $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                }else if(data.msg == "aaa timeout"){
+                    alert(Resource["eg.login.authServerTimedout"]);
+                    $("#loginErrorTip").html(Resource["eg.login.loginFail"]);
+                    $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                }else{
+                    alert(Resource["eg.login.loginFail"]);
+                    $("#loginErrorTip").html(Resource["eg.login.loginFail"]);
+                    $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+                }
+            }else{
+                alert(Resource["eg.login.loginFail"]);
+                $("#loginErrorTip").html(Resource["eg.login.loginFail"]);
+                $('#login').html(Resource["eg.login.loginBtn"])[0].disabled = false;
+            }
+        });
+    },
+    loginValidSucc:function (usernameValue,passwordValue) {
+        var that = this;
+        $('#login')[0].disabled = false;
+        var mode = window.top.GATEWAY_CUSTOM.HARD_MODE_WEBLOG;
+        CLI.log(usernameValue + Resource["eg.login.userLoginText"], true, mode);
+        //清楚框架页tab记忆功能
+        $.removeCookie('module');
+        $.removeCookie('threeModule');
+        if(usernameValue== "admin" && passwordValue== "admin") {
+            CLI.post( "/reset.php?a=getFile",function(data){
+                var isTag = false;
+                for (var i = 0 ;i < data.length;i++) {
+                    if (data[i] && data[i].indexOf(".config.text.bak") != -1) {
+                        that.showResetFileDialog(passwordValue);
+                        var isTag = true;
+                        break;
+                    }
+                }
+                if (!isTag) {
+                    that.loginSuccess(passwordValue);
+                }
+            });
+        } else {
+            that.loginSuccess(passwordValue);
+        }
+    },
+    init: function () {       
+        var that = this;
+        var isHttps = top.location.href.indexOf("https:") == 0;
+        var isFormApp=$.cookie("rg_app_quickset_cookie")?true:false;
+        if(!isHttps&&!isFormApp){     
+              that._starLoader(Resource["eg.login.isLoadingPage"]);
+            var host = window.location.hostname;
+            if(!window.location.port){
+                var port = "80";
+            }else{
+                var port = window.location.port;
+            }
+            //IPv6域名带[]
+            var data = CLI.post( "/login.php?a=jumpHttps",{"host":host.replace(/^\[|\]$/g,''),"port":port},function(data){
+                if(!!data.jump && !!data.httpsPort){
+                    window.location.href = "https://"+host+":"+data.httpsPort;
+                }else{
+                    that.loader && that.loader.loadComplete();
+                    $(".login-cont").show();
+                }
+            })
+        }else{
+            $(".login-cont").show();
+        }
+        that.pcIp = CLI.post("/login.php?a=getPcIp");
+        that.initView();//过滤信息
+        //版本时间动态
+        var date = new Date;
+        var year = date.getFullYear();
+        $(".copyright_text").html(Resource["eg.login.copyright1"]+year+" "+Resource["eg.login.copyright2"]);
+        that.isNoConfig();//出厂设置标志，设备模式
+        $.removeCookie("user");
+        //获取公钥
+        that.pubLicKey = CLI.post("../login.php?a=getRsaPublicKey");
+        localStorage.setItem('pubLicKey', that.pubLicKey)
+        $('#login').click(function () {
+            if(!!that.noNeedCheck){
+                that.loginWeb();
+                return false;
+            }
+            var username = $('#username');
+            var password = $('#password');
+            var usernameValue = $.trim(username.val());
+            var passwordValue = $.trim(password.val());
+            if(usernameValue === ""){
+                that.setTip(Resource["eg.login.pleaseEnterUsernameTip"],"username");
+                return false;
+            }
+            if(passwordValue === ""){
+                that.setTip(Resource["eg.login.pleaseEnterPassTip"],"password");
+                return false;
+            }
+            /* if(!$("#userAgreement").prop("checked")){
+                alert(Resource["eg.login.readAndAgreeAgreementFirst"]);
+                return;
+            } */
+            that.isChecking = false;
+            that.checkNum = 1;
+            that.checkStatus();
+        }),
+        $('#forgot_a').click(function () {
+            var forgot = $('#forgot_password').show();
+            var targer = $(this);
+            var offset = targer.offset();
+            forgot.css({
+                left: offset.left - (forgot.width() - targer.width()) / 2 + 'px',
+                top: offset.top - forgot.height() - 15 + 'px'
+            });
+            return false;
+        });
+        $('#forgot_close').click(function () {
+            $('#forgot_password').hide();
+            return false;
+        });
+        $('#setfavorite').click(function () {
+            that.addFavorite();
+        });
+        $('#sethome').click(function () {
+            that.setHomepage();
+        });
+        $('#password').keyup(function (e) {
+            if (e.keyCode == 13) {
+                $('#login').click();
+            }
+        });
+        $("#username").focus(function () {
+            $("#username_tip").hide();
+        }).blur(function () {
+            if ($.trim($(this).val()) === "") {
+                $("#username_tip").show();
+            }
+        });
+        $("#username_tip").click(function () {
+            $("#username").focus();
+        });
+        $("#password").focus(function () {
+            $("#password_tip").hide();
+        }).blur(function () {
+            if ($(this).val() === "") {
+                $("#password_tip").show();
+            }
+        });
+        $("#password_tip").click(function () {
+            $("#password").focus();
+        });
+
+        /*logo动画*/
+        $(".login-logo").mouseover(function(){
+            var $this=$(this);
+            var logoTop=parseInt($this.css("top"));
+            if(logoTop==-50) {
+                $(this).animate({top:10},500);
+            } else { return };
+        })
+        $(".login-logo").mouseout(function(){
+            $(this).animate({top:-50},500);
+        })
+
+        /*扫一扫登入锐捷网络客户中心微信公众号*/
+        $(".qr-code").mouseover(function(){
+            $(this).find(".qr-code-img").addClass("active");
+        })
+        $(".qr-code").mouseout(function(){
+            $(this).find(".qr-code-img").removeClass("active");
+        })
+        $("#a_lang_switch").click(function(){
+            Lang.changeLan();
+        });
+        urlLogin.initGogo();
+        //底部在线客服-闪电兔，小睿
+        if(window.GATEWAY_CUSTOM.PROD_MODE=="NBR"){
+            $("#tobot_dis").html(Resource['eg.main.ConsultingWithXr']);
+            $("#online_server_allow").css("background","url(/images/robot-smb.png) no-repeat").css("background-size","64px 93px");
+        }else{
+            $("#tobot_dis").html(Resource['eg.main.ConsultingWithSdt']);
+            $("#online_server_allow").css("background","url(/images/robot-eg.png) no-repeat").css("background-size","64px 93px");
+        }
+        if(!Lang.isZh()){
+            $("#online_server_allow").css("background","url(/images/robot-en.png) no-repeat").css("background-size","64px 93px");
+        }
+        var url = Lang.isZh()?window.GATEWAY_CUSTOM.ONLINE_SERVER_URL:"http://www.ruijienetworks.com/rita";
+        $("#online_server_robot").attr("href", url);
+        $("#online_server").attr("href", url);
+        Util.drigQuickRun("online_server_allow"); //拖拽
+        //机器人-闪电兔收起
+        $("#rbot_div").click(function(){
+            $("#online_server_allow").hide();
+        });
+    },
+    showResetFileDialog : function(passwordValue) {
+        var that = this;
+        if(!that.initResetFile) {
+            that.initResetFile = rui.Dialog.open({
+                target:$("#reset_pass_div"),
+                title: Resource["eg.login.restoreBackupFiles"],
+                width:450,
+                height:130,
+                allowClose:false,
+                show: true,
+                buttons: [
+                    {
+                        type:"ok",
+                        text:Resource["eg.login.sure"],
+                        onclick: function (item, dialog) {
+                            that.initResetFile.hide();
+                            if(!$("#reset_file").prop("checked")) {
+                                CLI.post("/reset.php?a=removeFile");//删除备份文件
+                                that.loginSuccess(passwordValue);
+                            } else {
+                                that._starLoader(Resource["eg.login.isRestartWait"]);
+                                CLI.post( "/reset.php?a=resetFile",function(data){
+                                });
+                                window.setTimeout(function(){
+                                    that.intervalid = setInterval(function(){
+                                        that.update_dd();
+                                    }, 1000); //11.x需要重新授权
+                                }, 2000);
+                            }
+                        }
+                    }
+                ],
+                closeWindowEvent: function(){
+
+                }
+            });
+        } else {
+            that.initResetFile.show();
+        }
+    },
+    initView  : function(){
+        //NBR定制信息
+        if(!!SYS_RES.INDEX_DEVICE_DEC){
+            $("#pro_desc").html(SYS_RES.INDEX_DEVICE_DEC);
+        }
+        if(!!SYS_RES.INDEX_DEVICE_DEC){
+            $("#nbr_1,#nbr_2,#nbr_3").hide();
+            $("#suport_bbc").append('<a href="  http://ryzj.ruijie.com.cn/forum.php" target="_blank" class="line" >'+Resource["eg.login.technicalSupportForum"]+'</a>');
+            $("#phone_line").html(SYS_RES.PHONE_LINE);
+        }
+        //海外版本定制信息，ruijie字样需要抽离js
+        $("#nbr_1").attr("href","http://bbs.ruijie.com.cn/portal.php");
+        $("#nbr_2").attr("href","http://mall.ruijie.com.cn/index.php?com=com_shop");
+        $("#nbr_3").attr("href","http://www.ruijie.com.cn/service/know.aspx");
+
+        rui.PlaceHolder.init();
+        var timeout = $.cookie("timeout");
+        if (timeout == 1) {
+            $.removeCookie("timeout");
+            this.setTip(Resource["eg.login.loginTimeoutRelogin"]);
+        }
+    },
+    initVerUrl : function(mes){
+        var that = this;
+        //获取设备型号，在线客服链接
+        that.hardtype = $.trim(mes);
+        window.top.GATEWAY_CUSTOM = custom_variate(that.hardtype,true);//登录不读取宏配置
+        var hardtypemode =  window.top.GATEWAY_CUSTOM.PROD_MODE;
+        that.getVersionUrl = window.top.GATEWAY_CUSTOM.ONLINE_SERVER_URL; //默认为行业，获取url
+        $('#online_server').attr({
+            href: that.getVersionUrl,
+            target: '_blank'
+        });
+        if(hardtypemode == "AG"){
+            $("#pro_name").html(Resource["eg.login.gatewayAG"]).css("font-size",SYS_RES.DEVICE_CSS);
+        }else if(hardtypemode == "ACE"){
+                $("#pro_name").html(Resource["eg.login.ACEflowcontrolengine"]).css("font-size",SYS_RES.DEVICE_CSS);
+        }else{
+            $("#pro_name").html(SYS_RES.INDEX_DEVICE_NAME).css("font-size",SYS_RES.DEVICE_CSS);
+        }
+        //EG1000C,不支持密码恢复功能
+        if(!window.top.GATEWAY_CUSTOM.supportPassReset){
+            $("#forgot_a").hide();
+        }
+        //EG5200-P修改密码提示
+        if(window.top.GATEWAY_CUSTOM.is5200P){
+            $("#forgetPasswordTip").html(Resource["eg.login.forgetPasswordTip5200"]);
+        }
+    },
+    setTip: function (text,id) {
+        var tip = $('#loginErrorTip');
+        tip.text(text).show();
+        if(id){
+            $("#"+id).focus();
+        }
+    },
+    isNoConfig: function () {
+        var self = this;
+        $.ajaxSettings.async = false;
+        $.post("/login.php?a=quickSys",function(o){
+            self.isNoConfig = $.trim(o[0]);
+            self.isSysmode = false;//默认为网关模式
+            if($.trim(o[1]) == "no sys-mode gateway"){
+                self.isSysmode = true;//桥模式
+            }
+            $.removeCookie("sysmode");
+            $.cookie("sysmode",o[1]);
+            self.initVerUrl(o[2]);//获取设备型号
+            //是否支持多语言
+            /*if(o[2]=="EG3000XE" || o[2]=="EG3000UE" || o[2]=="EG3250" || o[2] == "EG2100-P"){
+                $.cookie("supportMoreLan","yes");
+                $("#a_lang_switch").show();
+                if (Lang.isZh()) {
+                    $("#a_lang_switch").html("English");
+                } else {
+                    $("#a_lang_switch").html("Simplified Chinese");
+                }
+            }else{
+                $("#a_lang_switch").hide();
+                $.cookie("supportMoreLan","no");
+            }*/
+            if($.cookie("rg_app_quickset_cookie")==="y"){
+                $("#a_lang_switch").hide();
+            }
+        });
+        $.ajaxSettings.async = true;
+    },
+     _starLoader : function(msg) {
+         var self = this;
+        !self.loader && (self.loader = new rui.Loader({
+            //area : "loaddiv",
+            completeAction: "hide",
+            loadStyle:"innerborder"
+        }));
+         self.loader.setOption("text", msg);
+         self.loader.loadStart();
+    },
+    loginSuccess : function(passwordValue){
+        //清楚框架页下tab页当前tab id
+        var self = this;
+        //判断浏览器语言与设备是否一致
+        /*if(window.top.GATEWAY_CUSTOM.supportMoreLan) {
+            var flag = self.alertLanTip();
+            if(flag){
+                return
+            }
+        }*/
+        $.cookie("authenType",self.authenType);
+        if(self.accountType == "read"){
+            //判断是不是只读账号
+            $.cookie("accountType","read");
+            window.open("onlyread/onlyread.html", "_self");
+            return false;
+        }else{
+            $.cookie("accountType","write");
+        }
+        if(self.authenType == "aaa"){
+            //判断是不是服务器账号
+            window.open(mainPage, "_self");
+            return false;
+        }
+        var yOrN = (passwordValue == "admin") ? '' : '?defPassword=n';
+        if(window.top.GATEWAY_CUSTOM.quick_set){
+            if (!self.isSysmode&&self.isNoConfig == "0") {
+                mainPage = 'quick_set_pi/set_k.htm' + yOrN;
+            } else if (!self.isSysmode&&passwordValue == "admin") {
+                mainPage = 'system_pi/set_passw.htm';
+            } else if (!!self.isSysmode&&passwordValue == "admin") {
+                mainPage = 'system_pi/set_passw.htm';
+            }
+        } else {
+            if (passwordValue == "admin") {
+                if(self.authenType != "aaa"){
+                    mainPage = 'system_pi/set_passw.htm';
+                }
+            } else if (self.isNoConfig == "0") {
+                mainPage = 'quick_set_pi/set_k.htm';
+            }
+        }
+        // -P设备移动端通过手机在登录页登录后总是跳转到第二次快速配置
+        if(!!window.top.GATEWAY_CUSTOM.commonwifi && !self.isPC()){
+            mainPage = 'quick_set_pi/set_k.htm?type=local';
+        }
+        // BUGID：496527 MACC全网配置点击跳转按钮后，需要重新输入密码，输入密码后应该跳转到MACC全网配置-接口配置页面继续进行配置；
+		var queryMap = Util.getQueryPars();
+		if(queryMap["type"] == 'macc'){
+            mainPage = 'quick_set_pi/set_k.htm?type=macc';
+        }
+        /*if(window.top.GATEWAY_CUSTOM.IS_MACC_DEMO){
+            mainPage = 'quick_set_pi/set_k.htm?type=mode';
+        }*/
+        var isFormApp=$.cookie("rg_app_quickset_cookie")?true:false;
+        if(isFormApp){
+            mainPage = 'quick_set_pi/set_k.htm';
+        }
+        $.cookie('showPatchDialog',true);
+        //易用性修订   web-quickset为0，密码不是默认密码admin
+        if(self.isNoConfig == "0" && passwordValue != "admin"){
+            mainPage = 'quick_set_pi/set_k.htm?type=local';
+        }
+        //NBR睿易一体化
+        if(window.top.GATEWAY_CUSTOM.PROD_MODE == "NBR"){
+            var sweep_qrcode_data = request("exec", "show macc qr-code-set");
+            if($.trim(sweep_qrcode_data[0]) == "0"){
+                mainPage = 'quick_set_pi/set_k.htm?type=local';
+            }
+            if((self.isNoConfig == "0" && passwordValue == "admin") || queryMap["type"] == 'masterQuickset'){
+                mainPage = 'quick_set_pi/master.htm';
+            }
+        }
+        window.open(mainPage, "_self");
+    },
+    /**
+     * 通过每间隔一段时间请求sh clock 检测设备是否已经重启好了
+     */
+    update_dd : function() {
+        var self = this;
+        self._starLoader(Resource["eg.login.isRestartWait"]);
+        CLI.request("exec", "show clock", null, {
+            statusfn: function(code) {
+                if (code === 4 || code === 0 || code === false) { //当有返回状态信息表示重启成功了
+                    clearInterval(self.intervalid);
+                    alert(Resource["eg.login.restartSuccRelogin"]);
+                    window.top.location.href = '/index.htm';
+                }
+            },
+            success: function() {
+                // 规避解决bug249823
+                // clearInterval(intervalid);
+                // alert(LANG.success);
+                // window.location.href = "setsys_reload.htm";
+            },
+            error: function() {
+            }
+        });
+    },
+    alertLanTip: function(){
+        var that = this;
+        //判断浏览器语言与设备是否一致
+        var o = window.navigator;
+        var lan = o.userLangeage || o.language || o.systemLanguage || o.browserLanguage;
+        var browserLanIsZh = lan == 'zh-cn' || lan == 'zh-CN';
+        var deviceLanIsZh = Util.isZh();
+        if(browserLanIsZh && !deviceLanIsZh){
+            //切换成中文
+            if(confirm("当前浏览器语言是中文，是否将设备语言切换成中文，切换后会重启设备")){
+                CLI.log(Resource["eg.pub.log.lanChangeToChinese"]);
+                this.changeLan("zh");
+                return true;
+            }else{
+                return false
+            }
+        }
+        if(!browserLanIsZh && deviceLanIsZh){
+            //切换成英文
+            if(confirm("The current browser language is English. Do you want to switch the device language to English? After switching, the device will be restarted")){
+                CLI.log(Resource["eg.pub.log.lanChangeToEnglish"]);
+                this.changeLan("en");
+                return true;
+            }else{
+                return false
+            }
+        }
+    },
+    changeLan: function(lan){
+        var that = this;
+        that._starLoader(Resource["eg.login.isRestartWait"]);
+        setTimeout(function(){
+            CLI.post( "/patch.php?a=changeLan",{"lan":lan},function(data){});
+            window.setTimeout(function(){
+                that.intervalid = setInterval(function(){
+                    that.update_dd();
+                }, 1000);
+            }, 2000)
+        }, 200);
+    },
+    isPC: function(){
+        var userAgentInfo = navigator.userAgent;
+        var Agents = new Array("Android", "iPhone", "SymbianOS", "Windows Phone", "iPad", "iPod");
+        var flag = true;
+        for (var v = 0; v < Agents.length; v++) {
+            if (userAgentInfo.indexOf(Agents[v]) > 0) { flag = false; break; }
+        }
+        return flag;
+    }
+};
+var urlLogin = {
+    initGogo: function () {
+        var isIndex = $.trim(window.location.search) == '';
+        if (isIndex)
+            return;
+        var s_sysname = this.queryString("sysname");
+        var s_name = this.queryString("user");
+        var s_pass = this.queryString("pass");
+        if (s_sysname != 'rac' || !(s_name && s_pass)) {
+            return;
+        }
+        $('#username').val(s_name);
+        $('#password').val(s_pass);
+        $('#login').click();
+    },
+    queryString: function (val) {
+        var uri = window.location.search;
+        var re = new RegExp("" + val + "=([^&?]*)", "ig");
+        return ((uri.match(re)) ? (uri.match(re)[0].substr(val.length + 1)) : null);
+    }
+}
+
+$(function () {
+  /*  var langMap = {
+        pagetitle: ['锐捷网络--登录页面', ''],
+        language: {
+            logintxt: ['登录', ''],
+            usernametxt: ['用户名：', 'Username'],
+            passstxt: ['密&nbsp;&nbsp;&nbsp;码：', 'Passsword'],
+            loginbtn: ['登&nbsp;&nbsp;&nbsp;录', 'Login'],
+            forgetpwd: ['忘记密码？', ''],
+            FAQ: ['常见问题？', ''],
+            pwdhelp: ['登录的时候忘记密码怎么办？', ''],
+            findpwd: ['1）若您忘记密码，路由中的配置并不重要，可在上电的情况下，长按面板上的reset键8秒，即可还原至出厂设置，出厂ip为192.168.1.1 缺省用户名和密码都是admin。 <br />2）若配置重要，请联系客服<a href="http://webchat.ruijie.com.cn/live800/chatClient/chatbox.jsp?companyID=8933&configID=17&enterurl=robot&live800_ud_invite=robot" target="_blank">“智能小锐”</a>恢复密码。', '']
+        },
+        title: {
+            close: ['关闭', '']
+        },
+        msg: {
+            userRequest: ['请输入用户名！', ''],
+            passRequest: ['请输入密码！', ''],
+            networkError: ['登录失败，可能是网络中断，请检查网络连接。', ''],
+            usernameError: ['用户名或密码输入不正确，请重新输入！', ''],
+            loginTxt: ['登录', ''],
+            logining: ['正在登录', ''],
+            log: ['用户登录', ''],
+            allRequest: ['用户名或密码不能为空！', ''],
+            sysError: ['系统错误！', ''],
+            timeout: ["登录已超时，需要重新登录！", ""]
+        }
+    };
+    new Lang(langMap);*/
+    window.login = new Login();
+    login.init();
+    $("#username")[0].focus();
+
+    function IsPC(){
+        var userAgentInfo = navigator.userAgent;
+        var Agents = new Array("Android", "iPhone", "SymbianOS", "Windows Phone", "iPad", "iPod");
+        var flag = true;
+        for (var v = 0; v < Agents.length; v++) {
+            if (userAgentInfo.indexOf(Agents[v]) > 0) { flag = false; break; }
+        }
+        return flag;
+    }
+    if(IsPC()){
+        $("#loginErrorTip").text(Resource["eg.login.supportBrowsers"]);
+        if(window.top.GATEWAY_CUSTOM.PROD_MODE == "NBR"){
+            $("#loginErrorTip").text(Resource["eg.login.supportBrowsersNbr"]);
+        }
+    }else{
+        $("#loginErrorTip").text(Resource["eg.login.notSupportedHandheldBrowser"]);
+    }
+    /**
+     * 引入英文的login样式 chu20191114
+     */
+    if(!Lang.isZh()){       
+        seajs.use('/css/index-en.css', function( ) {
+    
+        });
+    }
+    /**  add by chenhu 20161209 for english version  **/
+    seajs.use('/js/odm/custom.js?v=1.0.0', function(cus) {        
+        cus.customize(true);//must after login.init()
+    });
+});

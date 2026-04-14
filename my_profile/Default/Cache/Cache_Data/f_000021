@@ -1,0 +1,850 @@
+/**
+ * @author chu
+ * @constructor Cliengine,mvp版本中该库只用于cli命令的请求，不能用于用户登录的认证
+ * @description cli命令的通讯类主要调用jaxa来，返回各种网络设备的数据
+ * @example var cliengine= new CLI();  CLI.xx;
+ * @since version 1.0
+ */
+Cliengine = function () {
+    this.pathname = document.location.pathname; //当前url路径,不包括前面的域名
+    this.pages = ['/index.htm']; //排除不需要进行登录超时检测的页面
+    this.checkAccess(); //检测用户是否访问非法链接
+    this.alertintval = 60000;   //弹窗间隔时间，防止频繁alert
+    this.ajaxtimeout = 15000;    //ajax请求超时时间1s
+    if (window.dialogArguments && window.dialogArguments.top) { // 建立无线eweb那套缓存机制
+        window.top._CACHE = window.dialogArguments.top._CACHE;
+    }
+    if (window.top._CACHE === undefined) {
+        window.top._CACHE = new HashMap();
+    }
+};
+Cliengine.prototype = {
+    /**
+     *@description  返回设备对应的网关地址
+     *@return {String} ip 设备对应的网关地址
+     **/
+    getHostIP: function () {
+        var ip = location.href;
+        var first, end;
+        var result;
+        first = ip.indexOf("\/\/");
+        ip = ip.substring(first + 2);
+        end = ip.indexOf("\/");
+        ip = ip.substring(0, end);
+        return ip;
+    },
+    /**
+     * @description 返回网址协议类型
+     * @returns {String} http|https
+     */
+    getProtocol: function () {
+        var p = location.protocol.toLowerCase();
+        if (p !== "http:" && p !== "https:") {
+            return "http:";
+        }
+        return p;
+    },
+    /**
+     * 判断当前是否为中文环境
+     * @returns {Boolean} 是中文则为真
+     */
+    isZh: function () {
+        var o = window.navigator, lan = o.userLangeage || o.language || o.systemLanguage || o.browserLanguage;
+        var isCn = lan === 'zh-cn' || lan === 'zh-CN';
+        if (typeof SysLan !== 'undefined') {
+            isCn = SysLan === 'zh';
+        }
+        return isCn;
+    },
+    /**
+     * 保留函数只是为了兼容以前代码
+     * 这里是异步请求格式,而且只用来处理下发cli命令
+     * 重构该函数，11.x平台跟10.x平台以前的接口有变化，这里采用jquery ajax请求
+     * 有汉字的返回结果需特殊处理，交由模块自己处理，此处返回原始数据
+     * @param {Array|String} strCLIMode 下发命令模式,如果是数组拼接成model1#model2字符串
+     * @param {String} strCLICommand 下发具体命令
+     * @param {Function} func 异步执行函数
+     * @param {String|Object} answer 应答字符串，只要用于一些需要应答型的命令，比如重启可以直接跟上应答yes，为对象时传递配置信息，{answer:'应答字符串',notdelay:true}
+     * @returns {Array|Boolean} 错误返回false,未认证返回null,成功返回解析过的数组
+     */
+    asy_request : function(strCLIMode, strCLICommand, func, answer, option) {
+        var self = this;
+        if (!option) {
+            option = {};
+        }
+        if ( typeof func !== "function") {
+            answer = func;
+            func = function () {
+            };
+        }
+        if (answer && typeof answer === "object") {
+            if (answer.answer) {
+                var tmp = answer.answer;
+                delete answer.answer;
+            }
+            $.extend(option, answer);
+        }
+        if (tmp)
+            answer = tmp;
+        if (typeof answer === "object")
+            answer = null;
+        if (func === undefined)
+            func = function () {
+            };
+        option.success = function(data) {
+            if(!!option&&!!option.batch){
+                func(self.continueSplit(data,option));
+            }else{
+                //374405 Running this command may take some time, please wait.
+                var returnmsg = data;
+                if(!!returnmsg){
+                    if(returnmsg.indexOf("Running this command may take some time, please wait.\r\n")!=-1){
+                        returnmsg = returnmsg.replace("Running this command may take some time, please wait.\r\n","");
+                    }else{
+                        returnmsg = returnmsg.replace("Running this command may take some time, please wait.","");
+                    }  
+                }
+                func(self.parseResult(returnmsg, option));
+            }
+        };
+        option.async = true;
+        option.charset = "gbk";
+        if(!!option&&!!option.charset){
+            option.charset = option.charset;
+        }else{
+            option.charset = "gbk";
+        }
+        this.request(strCLIMode, strCLICommand, answer, option);
+        return false;
+    },
+    /**
+     * 重构该函数，11.x平台跟10.x平台以前的接口有变化，这里采用jquery ajax请求
+     * 该函数只用于下发cli命名，登录、上传、下载不再使用，因为不同机制返回的数据格式有区别，无法统一
+     * 中文request,有汉字的返回结果需特殊处理，交由模块自己处理，此处返回原始数据
+     * @param {Array|String} strCLIMode 下发命令模式,如果是数组拼接成model1#model2字符串
+     * @param {String} strCLICommand 下发具体命令
+     * @param {String} answer 应答字符串，只要用于一些需要应答型的命令
+     * @param {Obeject} option 配置对象，由于默认情况下是处理cli请求的，当有option时可灵活请求其他数据
+     *                   option{
+     *                      async: false 默认为同步加载
+     *                      htmlspecialchars: false 默认为不需要转义
+     *                      success: 请求成功处理函数，默认使用parseResult处理数据并返回结果
+     *                      error:请求失败请求处理函数，默认弹出网络连接失败警告
+     *                      statusfn:状态码，处理函数，默认弹出警告，未授权跳回首页
+     *                      notdelay:true   登录超时不延迟
+     *                      reload:true 命令下发完是否接着重启
+                            charset : gbk/utf-8 默认为gbk，各模块有特殊需求可传参utf-8
+                            isjson : true返回json，false返回数组 默认为false
+                            refreshtime : 手动填充lasttime登录时间，传参的单位为秒
+                            batch : true为支持连续加载show命令，支持exec模式，分隔符为END?YES
+     *                   }
+     * @returns {Array|Boolean} 错误返回false,无错误时返回解析的数组，无任何数据就是空数组
+     */
+    request: function (strCLIMode, strCLICommand, answer, option) {
+        var that = this;
+        if($.cookie("accountType") == "read" && strCLIMode == "config"){
+            window.top.location.href = '/onlyread/onlyread.html';
+            return false;
+        }
+        if (answer && typeof answer === "object")
+            option = answer;
+        var ajaxData = {}, isOption = typeof option === "object", returnmsg = false;
+        var fn = isOption && typeof option.success === 'function' ? option.success : null;
+        var statusFn = isOption && typeof option.statusfn === 'function' ? option.statusfn : null;
+        var errorfn = isOption && typeof option.error === 'function' ? option.error : null;
+        var ajaxOption = {
+            //dataType: 'json',
+            //timeout: that.ajaxtimeout,
+            type: 'post'
+        };
+        if (!strCLICommand)
+            return []; //没有传递命令
+        if (!strCLIMode)
+            strCLIMode = 'exec';
+        //过滤debug support
+        var validateCmd = $.trim(strCLICommand);
+        if(/^debug\s+support[\s\S]*/.test(validateCmd)){
+            return [];
+        }
+        //校验XXS
+        if(strCLIMode == "config"){
+            var cmdFlag = Util.xxsValidate(strCLICommand);
+            if(!cmdFlag){
+                return;
+            }
+        }
+        if(!!option&&!!option.batch){
+            ajaxOption.url = "/cli.php?a=continushow";
+        }else{
+            ajaxOption.url = "/newcli.php";
+        }
+        ajaxData.mode_url = strCLIMode;
+        ajaxData.command = $.trim(strCLICommand);
+        ajaxData.charset = "gbk";
+        if(!!option&&!!option.charset){
+            ajaxData.charset = option.charset;
+        }else{
+            ajaxData.charset = "gbk";
+        }
+        if (!!answer && typeof answer !== "object")
+            ajaxData.answer = answer;
+        if (isOption && option.notdelay !== undefined)
+            ajaxData.notdelay = option.notdelay;
+        if (isOption && option.reload !== undefined)
+            ajaxData.reload = option.reload;
+        if (isOption && option.refreshtime !== undefined)
+            ajaxData.refreshtime = option.refreshtime;
+        if (isOption && option.htmlspecialchars === true)
+            ajaxData.htmlspecialchars = true;
+        ajaxOption.data = ajaxData;
+        ajaxOption.async = (isOption && option.async !== undefined) ? option.async : false;
+        ajaxOption.success = function (data) {
+            return returnmsg = that._success(data, fn, statusFn);
+        };
+        ajaxOption.error = function (XMLHttpRequest, textStatus, errorThrown) {
+            return returnmsg = that._error(XMLHttpRequest, textStatus, errorThrown, errorfn);
+        };
+        $.ajax(ajaxOption);
+        if(!!option&&!!option.batch&&!!returnmsg){
+            var continuArr = that.continueSplit(returnmsg,option);
+            return continuArr;//返回是数组，几条cli为数组的长度
+        }else{
+            //374405 Running this command may take some time, please wait.
+            if(!!returnmsg){
+                if(returnmsg.indexOf("Running this command may take some time, please wait.\r\n")!=-1){
+                    returnmsg = returnmsg.replace("Running this command may take some time, please wait.\r\n","");
+                }else{
+                    returnmsg = returnmsg.replace("Running this command may take some time, please wait.","");
+                }  
+            }
+            return this.parseResult(returnmsg, option);
+        }
+    },
+    /**
+     * @description 执行shell脚本
+     * @param {string} str shell脚本字符串
+     * @param {object} fn 异步执行函数
+     * @returns {object} 同步请求时返回json数据，异步时无返回
+     * @returns {object} 传参可以控制具体输出
+                option {
+                 charset : gbk/utf-8, 默认为utf-8，各模块有特殊需求可传参
+                 style  : json/arry/sting，json返回json，arry返回数组，string返回字符串，默认为数组
+                 isFilt  : true/false 默认为false表示str传进去会过滤特殊字符，true表示不会过滤特殊字符
+     *          }
+     * @returns utf-8默认返回为数组[],
+     * CNVD 报告的漏洞：彻底解决11.x EG的web页面shell调用的问题
+     */
+    // shell: function (str, fn, option) {
+    //     var that = this;
+    //     if (!str)
+    //         return false;
+    //     var content = false;
+    //     var data = {command: str};
+    //     if (option) {
+    //         data = option;
+    //         data.command = str;
+    //     }
+    //     $.ajax({
+    //         type: "post",
+    //         url: "/cli.php?a=shell",
+    //         data: data,
+    //         //timeout: that.ajaxtimeout,
+    //         async: !!fn && typeof fn === "function",
+    //         success: function (data) {
+    //             return content = that._success(data, fn && typeof fn === "function" ? fn : null);
+    //         },
+    //         error: function (XMLHttpRequest, textStatus, errorThrown) {
+    //             return content = that._error(XMLHttpRequest, textStatus, errorThrown);
+    //         }
+    //     });
+    //     if(!!option&&option.style=="json"){
+    //         try{
+    //             content = eval("(" + content + ")");
+    //         }catch(err) {
+    //             content = "";
+    //     　　}
+    //     }
+    //     return content;
+    // },
+    /**
+     * @description 兼容防火墙模块的代码写法
+     */
+    configCli : function(strCLICommand, func, options) {
+        var defaultSetting = {
+            returnType : "String"
+        };
+        if (!options) {
+            options = {};
+        }
+        options = $.extend(defaultSetting, options);
+        return this.request("config", strCLICommand, null, options);
+
+    },
+    getCliConfig : function(strCLICommand, func, options) {
+        var defaultSetting = {
+            returnType : "String",
+            success : ""
+        };
+        if (!options) {
+            options = {};
+        }
+        options = $.extend(defaultSetting, options);
+        if (func) {
+            return this.asy_request("exec", strCLICommand, func, null, options);
+        }
+        return this.request("exec", strCLICommand, null, options);
+    },
+    getCliConfig2Array : function(strCLICommand, func, options) {
+        var defaultSetting = {
+            returnType : "Array",
+            success : "",
+            isTrim:true
+        };
+        if (!options) {
+            options = {};
+        }
+        options = $.extend(defaultSetting, options);
+        if (func) {
+            return this.asy_request("exec", strCLICommand, func, null, options);
+        }
+        return this.request("exec", strCLICommand, null, options);
+    },
+     writeCli : function() {
+        this.getCliConfig("write\r\n", function(result) {
+        });
+    },
+    /**
+     * ajax请求成功后返回数据的处理
+     * @param {object|string} data 数据对象或json字符串
+     * @param {FUnction} fn 异步处理函数
+     */
+    _success: function (data, fn, statusFn) {
+        if (data === null)
+            return false;
+        //        if (typeof data === "string")
+        //            data = $.parseJSON(data);
+        if (!data.hasOwnProperty("status") || data.status === 1 || data.status === true) {//数据没有错误
+            data = data.data !== undefined ? data.data : data;
+            if (fn && typeof fn === "function") {
+                fn(data);
+                return true;
+            } else {
+                return data;
+            }
+        }
+        if (statusFn && typeof statusFn === "function") {   //状态码处理函数
+            statusFn(data.status);
+            return false;
+        } else {
+            if (data.status === 0 || data.status === false || data.status === 4) {  //未登录或者登录超时
+                if (window.opener && window.opener !== window) {
+                    window.opener = null;
+                    window.close();
+                } else if (this.pathname !== "/index.htm" && this.pathname !== "/") {
+                    top.window.location = "/loginout.php" + (data.status === 4 ? "?timeout=1" : "");
+                }
+                return false;
+            }
+            if (data.status > 0) { //请求失败
+                this._doCheck(data.status, data.msg);
+                return  false;
+            }
+        }
+    },
+    /**
+     * ajax请求过程中发生错误
+     * @param {object} XMLHttpRequest XMLHttpRequest对象
+     * @param {string} textStatus 状态值
+     * @param {object} errorThrown 异常抛出
+     * @param {Function} fn 错误执行函数
+     * @returns {Boolean} false
+     */
+    _error: function (XMLHttpRequest, textStatus, errorThrown, fn) {
+        if (fn && typeof fn === 'function') {
+            fn(XMLHttpRequest, textStatus, errorThrown);
+        } else {
+            var network_alert_time = window.top && window.top.CLI ? window.top.CLI.network_alert_time : this.network_alert_time;
+            if (network_alert_time === undefined)
+                network_alert_time = 0;
+            var date = new Date();
+            var nowtime = date.getTime();
+            if ((textStatus === 'timeout' || XMLHttpRequest.status === 404) && (nowtime - parseInt(network_alert_time)) > this.alertintval) {
+                window.top && window.top.CLI ? window.top.CLI.network_alert_time = nowtime : this.network_alert_time = nowtime;
+                //this.isZh() ? alert("请求出错，请检查你的网络！") : alert("Request error, pelease cheak your network!");//434211 升级过程出错问题
+            }
+        }
+        return false;
+    },
+    /*
+     * 解析ajax返回的数据为数组
+     * @param {String} strResult ajax返回的数据
+     * @returns {Array}返回分割后的二维数组
+     */
+    continueSplit :  function(returnmsg,option){
+        var continuStr = returnmsg.split("END?YES"),continuArr=[];
+        for (var i = 0; i < continuStr.length-1; i++) {
+            continuArr.push(this.parseResult(continuStr[i], option));
+        }
+        return continuArr;//返回是数组，几条cli为数组的长度
+    },
+    /*
+     * 解析ajax返回的数据为数组
+     * @param {String} strResult ajax返回的数据
+     * @returns {Array}{Object}返回分割后的数组或对象
+     */
+    parseResult : function(strResult, options) {
+        if (options && options.returnType == "String") {
+            if (!strResult) {
+                return "";
+            }
+            return (strResult).replace(/\r*\n/g, "\n");
+
+        }
+        // 11.x平台以\n 做分割
+        if (!strResult || !$.trim(strResult.replace(/(\r\n){1,}/g, ""))){
+            return [""];
+        }
+        if(options&&options.isTrim){
+            strResult=$.trim(strResult);
+        }
+        //
+        if(options&&options.isjson){
+            try{
+                strResult = eval("(" + strResult + ")");
+            }catch(err) {
+                strResult = "";
+        　　}
+        }else{
+            if(!!options&&!!options.batch){
+                var data = (strResult).replace(/\r*\n/g, "<?>").split("<?>");
+                strResult = [];//重置数组，过滤空字符串
+                for (var i = 0; i < data.length; i++) {
+                    if(!!data[i]){
+                        strResult.push(data[i]);
+                    }
+                }
+            }else{
+                strResult = (strResult).replace(/\r*\n/g, "<?>\r\n").split("<?>");
+            }
+            if ($.trim(strResult.join("")) == "") {
+                strResult = [""];
+            }
+        }
+        //console.log(strResult);
+
+        return strResult;
+    },
+    /**
+     * @description ajax post请求数据，主要用于请求php数据
+     * @param {string} url
+     * @param {object} params
+     * @param {function} fn 存在该参数时则为异步请求
+     * @returns {object} 同步请求时返回json数据，异步时无返回
+     */
+    post: function (url, params, fn) {
+        var that = this;
+        if (!params)
+            params = {};
+        if (typeof params === "function") {
+            fn = params;
+            params = {};
+        }
+        var content = false;
+        $.ajax({
+            type: "post",
+            url: url,
+            data: params,
+            //timeout: that.ajaxtimeout,
+            async: !!fn && typeof fn === "function",
+            success: function (data) {
+                return content = that._success(data, fn && typeof fn === "function" ? fn : null);
+            },
+            error: function (XMLHttpRequest, textStatus, errorThrown) {
+                return content = that._error(XMLHttpRequest, textStatus, errorThrown);
+            }
+        });
+        return content;
+    },
+    /**
+     * @description 设置缓存值
+     * @param {string}
+     *            key 缓存字段
+     * @param {type}
+     *            value 缓存值
+     * @returns {undefined}
+     */
+    setCache: function (key, value) {
+        window.top._CACHE.put(key, value, true);
+    },
+    /**
+     * @description 获取缓存值
+     * @param {type}
+     *            key 缓存字段
+     * @returns {undefined} 返回缓存值
+     */
+    getCache: function (key) {
+        return window.top._CACHE.get(key);
+    },
+    /**
+     * @description 删除指定key的缓存值
+     * @param {string}
+     *            key 缓存字段
+     */
+    removeCache: function (key) {
+        window.top._CACHE.remove(key);
+    },
+    /**
+     *重置缓存
+     */
+    resetCache: function () {
+        window.top._CACHE.clear();
+        window.top._CACHE = new HashMap();
+    },
+    /**
+     *@description 记录用户日志
+     *@param {String} str 日志内容
+     */
+    log: function (str, noWrite,hardtype_mode) {
+        operateUserLog(str, !noWrite, false, hardtype_mode);
+    },
+    /**
+     *@description 对返回回来的数据进行检查
+     *@param {String}  result 用异步或同步返回回来的数据做精略的检查
+     *@return {Number} 1表示正常，非1表示不正常
+     **/
+    _doCheck: function (status, msg) {
+        var Note = this.isZh() ? {
+            4: "用户登录超时,请重新登录！",
+            11: "系统繁忙！",
+            14: "系统内部错误，无法完成请求！"
+        } : {
+            4: "",
+            11: ""
+        };
+        if (Note[status] !== undefined) {
+            alert(Note[status]);
+            return 0;
+        }
+        return 1;
+    },
+    /**
+     * 访问非登录页时，需要检查用户是否登录
+     **/
+    checkAccess: function () {
+        var that = this;
+        var page = that.pathname.substring(that.pathname.lastIndexOf("\/") + 1);
+        //修复漏洞http://www.wooyun.org/bugs/wooyun-2014-082472
+        if (this.pathname !== "/index.htm" && this.pathname !== "/" && this.pathname !== "/main.htm" && window.opener && window.opener !== window) {  //弹窗
+            try{
+                if (window.opener.top.__cache == undefined) {
+                    window.opener = null;
+                    window.close();
+                }
+            }catch(e){};
+        } else if(!window.dialogArguments){  //非弹窗
+            if ( page !== "app_route.htm" && page !== "master.htm" && page !== "vpn_export.htm" && page !== "onlyread.html" && page !== "main.htm" && page !== "set_k.htm" && page !== "set_passw.htm" && page !== "packetCapture.html" && page !== "flow_user_detail.htm" && that.pathname.indexOf("/cache.htm") === -1 && that.pathname !== "/index.htm" && that.pathname !== "/" && window.top && window.top.__cache == undefined) {
+                top.window.location = "/";
+            }
+        }
+        if (this.pathname !== "/index.htm" && this.pathname !== "/") {
+            var islogin = window.top && window.top.CLI ? window.top.CLI._islogin : that._islogin;
+            if (islogin !== true) {
+                $.ajax({
+                    type: "post",
+                    url: "/cli.php?a=checklogin",
+                    async: true,
+                    success: function (data) {
+                        that._success(data, function () {
+                            window.top && window.top.CLI ? window.top.CLI._islogin = true : that._islogin = true;
+                        });
+                    },
+                    error: function (XMLHttpRequest, textStatus, errorThrown) {
+                        that._error(XMLHttpRequest, textStatus, errorThrown);
+                    }
+                });
+            }
+        }
+    },
+    //验证初始密码未修改不允许访问
+    checkInitPassModify : function (){
+        CLI.post("/cli.php?a=checkPdone");
+    },
+    /**
+     * 移植防火墙
+     * @description 从CLI中获取的数据,返回数组
+     * @param {String}
+     *            strCLICommand 配置的命令串
+     * @param {String}
+     *            isAnswer
+     * @return {Boolean} 返回true or false
+     */
+    getCliData: function (strCLICommand, key) {
+        var result = this.getCliConfig(strCLICommand, null);
+        if (!result || result == -1 || result == -1) {
+            return [];
+        }
+        var beginIndex = result.indexOf(key);
+        var data = [];
+        if (beginIndex == -1) {
+            return [];
+        }
+        var aResult = result.split(key);
+        for (var i = 0; i < aResult.length; i++) {
+            var temp = aResult[i];
+            if (!temp || temp.trim() == "" || temp == "\n" || temp == "\r\n") {
+                continue;
+            }
+            data.push(key + temp);
+        }
+        return data;
+
+    },
+    /**
+     * @description 异步从设备加载数据exec模式
+     * @param {String}
+     *            strCLICommand 配置的命令串
+     * @param {String}
+     *            func 从设备返回数据后，返回回来的数据做异步调用处理.
+     * @return {Boolean} 返回true or false
+     */
+    asyGetCliConfig: function (strCLICommand, func, isAnswer) {
+        return this.asy_request("exec", strCLICommand, func, isAnswer, null,
+            null, null, null);
+    }
+};
+/**
+ * @author chu
+ * @constructor Base64
+ * @description 主要用于Base64位的解密加密的算法
+ * @example var base64= new Base64();  base64.encode(xx);
+ * @since version 0.1
+ */
+var Base64 = {
+    /**
+     *@description base64 密钥串
+     *@field
+     */
+    _keyStr: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=",
+    /**
+     *@description 对传入的数据做Base64位加密
+     *@param {String} input 字符串变量
+     *@return {String} 返回字符串
+     **/
+    encode: function (input) {
+        var output = "";
+        var chr1, chr2, chr3, enc1, enc2, enc3, enc4;
+        var i = 0;
+        input = this._utf8_encode(input);
+        while (i < input.length) {
+
+            chr1 = input.charCodeAt(i++);
+            chr2 = input.charCodeAt(i++);
+            chr3 = input.charCodeAt(i++);
+            enc1 = chr1 >> 2;
+            enc2 = ((chr1 & 3) << 4) | (chr2 >> 4);
+            enc3 = ((chr2 & 15) << 2) | (chr3 >> 6);
+            enc4 = chr3 & 63;
+            if (isNaN(chr2)) {
+                enc3 = enc4 = 64;
+            } else if (isNaN(chr3)) {
+                enc4 = 64;
+            }
+
+            output = output +
+                    this._keyStr.charAt(enc1) + this._keyStr.charAt(enc2) +
+                    this._keyStr.charAt(enc3) + this._keyStr.charAt(enc4);
+        }
+
+        return output;
+    },
+    /**
+     *@description 对传入的数据做Base64位解密
+     *@param {String} input 字符串变量
+     *@return {String} 返回字符串
+     **/
+    decode: function (input) {
+        var output = "";
+        var chr1, chr2, chr3;
+        var enc1, enc2, enc3, enc4;
+        var i = 0;
+        input = input.replace(/[^A-Za-z0-9\+\/\=]/g, "");
+        while (i < input.length) {
+
+            enc1 = this._keyStr.indexOf(input.charAt(i++));
+            enc2 = this._keyStr.indexOf(input.charAt(i++));
+            enc3 = this._keyStr.indexOf(input.charAt(i++));
+            enc4 = this._keyStr.indexOf(input.charAt(i++));
+            chr1 = (enc1 << 2) | (enc2 >> 4);
+            chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+            chr3 = ((enc3 & 3) << 6) | enc4;
+            output = output + String.fromCharCode(chr1);
+            if (enc3 != 64) {
+                output = output + String.fromCharCode(chr2);
+            }
+            if (enc4 != 64) {
+                output = output + String.fromCharCode(chr3);
+            }
+
+        }
+
+        output = this._utf8_decode(output);
+        return output;
+    },
+    /**
+     *@description 对传入的数据做Base64的utf-8 加密
+     *@param {String} string 字符串变量
+     *@return {String} 返回加密后的字符串
+     **/
+    _utf8_encode: function (string) {
+        string = string.replace(/\r\n/g, "\n");
+        var utftext = "";
+        for (var n = 0; n < string.length; n++) {
+
+            var c = string.charCodeAt(n);
+            if (c < 128) {
+                utftext += String.fromCharCode(c);
+            }
+            else if ((c > 127) && (c < 2048)) {
+                utftext += String.fromCharCode((c >> 6) | 192);
+                utftext += String.fromCharCode((c & 63) | 128);
+            }
+            else {
+                utftext += String.fromCharCode((c >> 12) | 224);
+                utftext += String.fromCharCode(((c >> 6) & 63) | 128);
+                utftext += String.fromCharCode((c & 63) | 128);
+            }
+
+        }
+
+        return utftext;
+    },
+    /**
+     *@description 对传入的数据做Base64的utf-8 解密
+     *@param {String} utftext 字符串变量
+     *@return {String} 返回解密后的字符串
+     **/
+    _utf8_decode: function (utftext) {
+        var string = "";
+        var i = 0;
+        var c = c1 = c2 = 0;
+        while (i < utftext.length) {
+
+            c = utftext.charCodeAt(i);
+            if (c < 128) {
+                string += String.fromCharCode(c);
+                i++;
+            }
+            else if ((c > 191) && (c < 224)) {
+                c2 = utftext.charCodeAt(i + 1);
+                string += String.fromCharCode(((c & 31) << 6) | (c2 & 63));
+                i += 2;
+            }
+            else {
+                c2 = utftext.charCodeAt(i + 1);
+                c3 = utftext.charCodeAt(i + 2);
+                string += String.fromCharCode(((c & 15) << 12) | ((c2 & 63) << 6) | (c3 & 63));
+                i += 3;
+            }
+
+        }
+
+        return string;
+    }
+
+};
+
+/**
+ * 用户兼容缓存机制
+ * @returns {undefined}
+ */
+window.HashMap = function () {
+    /** Map大小* */
+    this.length = 0;
+    /** 对象* */
+    this.entry = new Object();
+
+    /** Map的存put方法* */
+    this.put = function (key, value, isCover) {
+        if (!this.containsKey(key)) {
+            this.length++;
+            this.entry[key] = value;
+        } else {
+            if (isCover) {
+                delete this.entry[key];
+                this.entry[key] = value;
+            }
+        }
+
+    };
+    /** Map取get方法* */
+    this.get = function (key) {
+        return this.containsKey(key) ? this.entry[key] : null;
+    };
+    /** Map删除remove方法* */
+    this.remove = function (key) {
+        if (this.containsKey(key)) {
+            delete this.entry[key];
+            this.length--;
+        }
+    };
+    /** 是否包含Key* */
+    this.containsKey = function (key) {
+        return (key in this.entry);
+    };
+    /** 是否包含Value* */
+    this.containsValue = function (value) {
+        for (var prop in this.entry) {
+            if (this.entry[prop] == value) {
+                return true;
+            }
+        }
+        return false;
+    };
+    /** 所有的Value* */
+    this.values = function () {
+        var values = new Array();
+        for (var prop in this.entry) {
+            values.push(this.entry[prop]);
+        }
+        return values;
+    };
+    /** 所有的 Key* */
+    this.keys = function () {
+        var keys = new Array();
+        for (var prop in this.entry) {
+            keys.push(prop);
+        }
+        return keys;
+    };
+    /** Map size* */
+    this.size = function () {
+        return this.length;
+    };
+    /** 清空Map* */
+    this.clear = function () {
+        this.length = 0;
+        delete this.entry;
+        this.entry = new Object();
+    };
+};
+
+/**
+ 实例化cliengine对象方便调用
+ **/
+window.CLI = new Cliengine();
+
+/**兼容旧代码***/
+var auth = top.$.cookie('auth');
+window.request = $.proxy(window.CLI.request, window.CLI);
+window.asy_request = $.proxy(window.CLI.asy_request, window.CLI);
+window.getHostIP = $.proxy(window.CLI.getHostIP, window.CLI);
+/*动态加载宏文件和web的操作日志*/
+//$.getScript("/pub/rootfs.config.dao.js"); //这是异步，动态加载宏配置文件配置
+$.ajax({
+  url: "/pub/rootfs.config.dao.js?v=1.0.0",
+  async:false,//同步加载
+  dataType: "script",
+  success: function(){
+     //ok
+  }
+});
