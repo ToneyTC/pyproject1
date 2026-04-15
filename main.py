@@ -421,7 +421,7 @@ def 发布计划(page):
             page.click("button:has-text('查询')", timeout=5000)
             print("✅ 已点击查询")
             time.sleep(2)
-
+111
             # 空数据 → 重置 → 重新输入
             if page.locator("text=暂无数据").is_visible(timeout=2000):
                 print(f"\n❌ BOM 不存在：{code}")
