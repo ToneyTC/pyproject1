@@ -241,7 +241,35 @@ def _工艺管理查询后打开并校验详情(page, code):
     rows = page.locator("table.el-table__body tr").filter(has_text=code)
     n = rows.count()
     if n == 0:
-        print("❌ 工艺管理无匹配行，跳过详情校验")
+        print("ℹ️ 启用中未找到匹配工艺，切换到待发布重查")
+        page.click("div.el-tabs__item:text('待发布')", timeout=8000)
+        time.sleep(0.8)
+        _填充工艺管理查询工艺字段(page, code)
+        page.click("button:has-text('查询')", timeout=5000)
+        time.sleep(1.2)
+
+        rows = page.locator("table.el-table__body tr").filter(has_text=code)
+        n = rows.count()
+        if n == 0:
+            print("❌ 待发布仍未找到匹配工艺，跳过详情校验")
+            return
+
+        pick_i = 0
+        for i in range(n):
+            if _工艺列表行属成品工艺(rows.nth(i).inner_text()):
+                pick_i = i
+                break
+        row = rows.nth(pick_i)
+        row.scroll_into_view_if_needed(timeout=8000)
+        _勾选物料表格行(row)
+        time.sleep(0.3)
+
+        # 待发布命中后按你的要求：点击编辑
+        edit_btn = row.locator("button:has-text('编辑')").first
+        if edit_btn.count() == 0:
+            edit_btn = page.locator("button:has-text('编辑')").first
+        edit_btn.click(timeout=5000)
+        print("✅ 待发布已找到匹配工艺并进入编辑")
         return
 
     pick_i = None
@@ -421,7 +449,6 @@ def 发布计划(page):
             page.click("button:has-text('查询')", timeout=5000)
             print("✅ 已点击查询")
             time.sleep(2)
-111
             # 空数据 → 重置 → 重新输入
             if page.locator("text=暂无数据").is_visible(timeout=2000):
                 print(f"\n❌ BOM 不存在：{code}")

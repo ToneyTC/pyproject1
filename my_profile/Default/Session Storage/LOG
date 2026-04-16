@@ -1,15 +1,6 @@
-2026/04/15-15:29:32.410 ab34 Reusing MANIFEST E:\pyproject\my_profile\Default\Session Storage/MANIFEST-000001
-2026/04/15-15:29:32.411 ab34 Recovering log #325
-2026/04/15-15:29:32.413 ab34 Reusing old log E:\pyproject\my_profile\Default\Session Storage/000325.log 
-2026/04/15-15:30:32.592 ab34 Level-0 table #329: started
-2026/04/15-15:30:32.596 ab34 Level-0 table #329: 19448 bytes OK
-2026/04/15-15:30:32.598 ab34 Delete type=0 #325
-2026/04/15-15:30:32.599 ab34 Compacting 4@0 + 1@1 files
-2026/04/15-15:30:32.603 ab34 Generated table #330@0: 10 keys, 19113 bytes
-2026/04/15-15:30:32.603 ab34 Compacted 4@0 + 1@1 files => 19113 bytes
-2026/04/15-15:30:32.604 ab34 compacted to: files[ 0 1 0 0 0 0 0 ]
-2026/04/15-15:30:32.605 ab34 Delete type=2 #318
-2026/04/15-15:30:32.605 ab34 Delete type=2 #320
-2026/04/15-15:30:32.605 ab34 Delete type=2 #323
-2026/04/15-15:30:32.605 ab34 Delete type=2 #326
-2026/04/15-15:30:32.605 ab34 Delete type=2 #329
+2026/04/16-16:40:14.159 90ac Reusing MANIFEST E:\pyproject\my_profile\Default\Session Storage/MANIFEST-000001
+2026/04/16-16:40:14.160 90ac Recovering log #328
+2026/04/16-16:40:14.162 90ac Reusing old log E:\pyproject\my_profile\Default\Session Storage/000328.log 
+2026/04/16-16:42:29.483 90bc Level-0 table #333: started
+2026/04/16-16:42:29.487 90bc Level-0 table #333: 19540 bytes OK
+2026/04/16-16:42:29.489 90bc Delete type=0 #328
