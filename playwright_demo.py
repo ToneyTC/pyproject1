@@ -339,17 +339,21 @@ def 更新计划(page):
                 except Exception:
                     pass
         # 兜底：工具栏编辑
-        tb = page.locator("button:has-text('编辑')").first
-        if tb.count() > 0:
-            try:
-                tb.click(timeout=8000, force=True)
-                return True
-            except Exception:
+        for tb_sel in (
+            "button:has-text('编辑修改')",
+            "button:has-text('编辑')",
+        ):
+            tb = page.locator(tb_sel).first
+            if tb.count() > 0:
                 try:
-                    tb.evaluate("el => el.click()")
+                    tb.click(timeout=8000, force=True)
                     return True
                 except Exception:
-                    pass
+                    try:
+                        tb.evaluate("el => el.click()")
+                        return True
+                    except Exception:
+                        pass
         return False
 
     def _进入编辑后检查投料工位与主料():
@@ -1058,107 +1062,6 @@ def 更新计划(page):
                         pass
         return False
 
-    def _工艺编码匹配令牌(numeric_code: str):
-        nc = numeric_code.strip()
-        tokens = [nc]
-        if nc.isdigit():
-            tokens.append(f"FL_{nc}")
-        elif nc.upper().startswith("FL_"):
-            suf = nc.split("_", 1)[-1]
-            if suf.isdigit():
-                tokens.append(suf)
-        return tokens
-
-    def _工艺管理列表按代码点击工艺编号进入详情(numeric_code: str) -> bool:
-        """在当前表格结果中扫描所有非半成品行，点击匹配工艺编码的单元格/链接（升级后列表重绘时常用）。"""
-        tokens = _工艺编码匹配令牌(numeric_code)
-        rows = _工艺管理页表格数据行()
-        for _ in range(40):
-            if rows.count() > 0:
-                break
-            time.sleep(0.12)
-            rows = _工艺管理页表格数据行()
-        for i in range(rows.count()):
-            r = rows.nth(i)
-            if _行包含半成品或bcp(r):
-                continue
-            try:
-                row_txt = r.inner_text().strip().replace("\n", " ")
-            except Exception:
-                row_txt = ""
-            if not any(t in row_txt for t in tokens):
-                continue
-            if _点击目标行的工艺编号(r, numeric_code):
-                return True
-        return False
-
-    def _工艺管理刷新查询并取目标行(numeric_code: str):
-        """重新填入工艺代码并查询，返回首个非半成品且行文案含该代码的 tr locator。"""
-        tokens = _工艺编码匹配令牌(numeric_code)
-        _关闭确认信息弹窗()
-        try:
-            _工艺搜索输入框()
-        except RuntimeError:
-            _返回工艺管理列表页()
-            time.sleep(0.75)
-            _关闭确认信息弹窗()
-            _等待工艺管理页就绪(14000)
-        if not _等待工艺搜索输入可编辑(26000):
-            print(
-                "⚠️ 工艺管理列表上未找到「工艺编号」筛选框（可能仍在详情页），跳过刷新查询；"
-                "将依赖当前表格内点击工艺编号"
-            )
-            return None
-        proc_input = _工艺搜索输入框()
-        if not _工艺筛选框写入文本(proc_input, numeric_code.strip()):
-            print("⚠️ 工艺筛选框写入失败，跳过刷新查询")
-            return None
-        qbtn = _工艺管理查询按钮()
-        try:
-            qbtn.click(timeout=8000)
-        except Exception:
-            _关闭确认信息弹窗()
-            qbtn = _工艺管理查询按钮()
-            qbtn.click(timeout=8000, force=True)
-        time.sleep(1.0)
-        rows_loc = _工艺管理页表格数据行()
-        for _ in range(45):
-            if rows_loc.count() > 0:
-                break
-            time.sleep(0.12)
-            rows_loc = _工艺管理页表格数据行()
-        for i in range(rows_loc.count()):
-            r = rows_loc.nth(i)
-            if _行包含半成品或bcp(r):
-                continue
-            try:
-                t = r.inner_text().strip().replace("\n", " ")
-            except Exception:
-                t = ""
-            if any(tok in t for tok in tokens):
-                return r
-        return None
-
-    def _工艺升级后重新进入详情(numeric_code: str, pick_row):
-        """
-        工艺升级后表格可能重绘、行 locator 失效：多轮尝试原行点击、全表扫描、重新查询后再点。
-        """
-        _关闭确认信息弹窗()
-        row_cursor = pick_row
-        for attempt in range(6):
-            _关闭确认信息弹窗()
-            if row_cursor is not None:
-                try:
-                    if row_cursor.count() > 0 and _点击目标行的工艺编号(row_cursor, numeric_code):
-                        return True
-                except Exception:
-                    pass
-            if _工艺管理列表按代码点击工艺编号进入详情(numeric_code):
-                return True
-            row_cursor = _工艺管理刷新查询并取目标行(numeric_code)
-            time.sleep(0.55 + attempt * 0.28)
-        return False
-
     def _展示值匹配期望(实际: str, 期望: str) -> bool:
         """下拉展示可能被截断，允许「期望全文包含于实际」「实际为期望前缀」等宽松匹配。"""
         a = (实际 or "").strip()
@@ -1176,7 +1079,32 @@ def 更新计划(page):
             return True
         return False
 
+    def _工序记录报表严格匹配期望(实际: str, 期望: str) -> bool:
+        """
+        「工序记录报表」须与期望全文一致（仅折叠空白），不得使用 _展示值匹配期望 的宽松规则：
+        否则 RC-9020-01-10 与 RC-9020-01-11 会因共用前缀 RC-9020-01-1 被误判为通过。
+        """
+        a = "".join((实际 or "").split())
+        e = "".join((期望 or "").split())
+        if not e:
+            return not bool(a)
+        return a == e
+
     def _取表单项按标签(label: str):
+        """
+        优先 label 文案；失败时用本地保存页面对照的稳定类名（#/produce/craft/modeling/setMaintain …）。
+        例如：batchRecordReportKey / instructReportKey / instructParams（ElementUI el-form-item 附加 class）。
+        """
+        lb = (label or "").strip()
+        vue_field_class = {
+            "批记录报表": "batchRecordReportKey",
+            "指令报表": "instructReportKey",
+            "指令参数记录": "instructParams",
+        }.get(lb)
+        if vue_field_class:
+            by_cls = page.locator(f".el-form-item.{vue_field_class}").first
+            if by_cls.count() > 0:
+                return by_cls
         loc = page.locator(".el-form-item").filter(
             has=page.locator(".el-form-item__label", has_text=label)
         ).first
@@ -1419,15 +1347,28 @@ def 更新计划(page):
                 except Exception:
                     pass
 
-    def _加工顺序删至保留包装工序() -> bool:
+    def _加工顺序删至保留包装工序(*, verbose: bool = False) -> bool:
         """删除工序直至仅剩 1 条；优先删掉不含「包装」的行（与校验逻辑一致）。"""
         _关闭确认信息弹窗()
+
+        def _当前工序条数():
+            w = page.locator("#container li.working-procedure-item")
+            if w.count() == 0:
+                w = page.locator("li.working-procedure-item")
+            return w, w.count()
+
+        _, n0 = _当前工序条数()
+        if verbose and n0 > 0:
+            print(f"      └─ 加工顺序当前共 {n0} 条")
+
         for _ in range(24):
             wp = page.locator("#container li.working-procedure-item")
             if wp.count() == 0:
                 wp = page.locator("li.working-procedure-item")
             n = wp.count()
             if n <= 1:
+                if verbose:
+                    print(f"      └─ 加工顺序已剩 {max(n, 0)} 条，结束删除")
                 return True
             del_i = None
             for i in range(n):
@@ -1437,6 +1378,9 @@ def 更新计划(page):
                     break
             if del_i is None:
                 del_i = n - 1
+            del_tx = _读取工序列表项文案(wp.nth(del_i)).strip() or f"第{del_i + 1}条"
+            if verbose:
+                print(f"      └─ 删除工序项（优先非「包装」）：{del_tx!r}")
             row = wp.nth(del_i)
             trash = row.locator(
                 ".el-icon-delete, i[class*='el-icon-delete'], span[class*='delete'], "
@@ -1462,7 +1406,7 @@ def 更新计划(page):
             time.sleep(0.4)
         return page.locator("li.working-procedure-item").count() <= 1
 
-    def _尝试点击保存工艺相关按钮() -> bool:
+    def _尝试点击保存工艺相关按钮(*, verbose: bool = False) -> bool:
         for name in ("保存工艺信息", "保存工艺", "保存基本信息", "保存工序信息", "保存"):
             btn = page.locator("#container button.el-button").filter(has_text=name).first
             if btn.count() > 0:
@@ -1472,27 +1416,42 @@ def 更新计划(page):
                         btn.click(timeout=7000)
                         time.sleep(0.65)
                         _关闭确认信息弹窗()
+                        if verbose:
+                            print(f"      └─ 已点击「{name}」")
                         return True
                 except Exception:
                     continue
+        if verbose:
+            print("      └─ 未找到可见的保存类按钮（保存工艺信息 / 保存工序信息 …）")
         return False
 
-    def _尝试修复工艺详情页():
+    def _尝试修复工艺详情页(code: str = ""):
         """若三项报表或加工顺序不符，在详情页改下拉、删多余工序并尝试保存。"""
-        print("🔧 尝试自动修正：批记录报表 / 指令报表 / 指令参数记录 + 加工顺序仅保留包装…")
+        pfx = f"   [{code}] " if code else "   "
+        print(f"{pfx}──────── 自动修正过程 ────────")
+        print(f"{pfx}① 三项报表下拉（批记录 / 指令报表 / 指令参数记录）")
         for lab, exp in _工艺详情三项报表期望值():
             item = _取表单项按标签(lab)
             if item.count() == 0:
+                print(f"{pfx}   ⚠️ 「{lab}」：未找到表单项，跳过")
                 continue
             cur = _读取表单项下拉展示(item)
             if _展示值匹配期望(cur, exp):
+                print(f"{pfx}   ○ 「{lab}」已是目标值，跳过（当前：{cur!r}）")
                 continue
-            _表单项_el_select_选择(lab, exp)
+            print(f"{pfx}   ⋯ 「{lab}」当前 {cur!r} → 期望 {exp!r}")
+            ok_sel = _表单项_el_select_选择(lab, exp)
+            print(f"{pfx}   {'✅' if ok_sel else '❌'} 「{lab}」下拉选择{'完成' if ok_sel else '失败'}")
             time.sleep(0.25)
-        _加工顺序删至保留包装工序()
+        print(f"{pfx}② 加工顺序（删至仅保留含「包装」的一条）")
+        ok_del = _加工顺序删至保留包装工序(verbose=True)
+        print(f"{pfx}   {'✅' if ok_del else '❌'} 加工顺序精简{'完成' if ok_del else '异常退出'}")
         time.sleep(0.35)
-        _尝试点击保存工艺相关按钮()
+        print(f"{pfx}③ 保存工艺/工序信息")
+        ok_save = _尝试点击保存工艺相关按钮(verbose=True)
+        print(f"{pfx}   {'✅' if ok_save else '⚠️'} 保存按钮{'已点击' if ok_save else '未点到（可能需手工保存）'}")
         time.sleep(0.9)
+        print(f"{pfx}──────── 自动修正结束（即将复检） ────────")
 
     def _校验工艺基本信息三项报表字段():
         """
@@ -1515,10 +1474,288 @@ def 更新计划(page):
             lines.append(f"{mark} 「{lab}」展示：{actual!r} — 期望：{exp!r}")
         return all_ok, lines
 
+    def _侧边点击一级菜单(module_name: str, timeout_ms: int = 15000) -> bool:
+        """一级侧边菜单（如 生产管理）：`b.quick-name` 在折叠/滚动后可能失效，做多选择器兜底。"""
+        candidates = (
+            page.locator("b.quick-name").filter(has_text=module_name).first,
+            page.locator(".el-submenu__title").filter(has_text=module_name).first,
+            page.locator(".el-menu-item").filter(has_text=module_name).first,
+            page.locator(".sidebar-container .el-menu").get_by_text(module_name, exact=True).first,
+            page.locator(".sidebar-container").get_by_text(module_name, exact=True).first,
+            page.locator("[class*='sidebar']").get_by_text(module_name, exact=True).first,
+            page.get_by_role("menuitem", name=module_name).first,
+            page.locator(".nest-menu-title, .submenu-title, .menu-title").filter(has_text=module_name).first,
+        )
+        for loc in candidates:
+            try:
+                if loc.count() == 0:
+                    continue
+                loc.scroll_into_view_if_needed(timeout=8000)
+                loc.click(timeout=timeout_ms, force=True)
+                return True
+            except Exception:
+                try:
+                    loc.evaluate(
+                        "e => { e.scrollIntoView({block:'center'}); e.click(); }"
+                    )
+                    return True
+                except Exception:
+                    continue
+        return False
+
+    def _工艺侧栏展开并点击子菜单(sub_name: str) -> bool:
+        """
+        侧栏：展开「工艺」分组 → 点击子菜单（标准工序 / 工艺管理 等）。
+        子项 DOM 常见为 div.child-menu-item.click-interactive > div.child-menu-name，应点击整行。
+        不强制先点「生产管理」：若已在生产模块且工艺已展开，可直接点行。
+        优先在固定 XPath 宿主内查找（你提供的侧栏子区）：/html/body/div[3]/div[1]/div[2]/div/div[2]/div[1]
+        """
+        _关闭确认信息弹窗()
+        tmo = 15000
+        sub = (sub_name or "").strip()
+        if not sub:
+            return False
+
+        _SIDEBAR_CHILD_MENU_HOST_XPATH = (
+            "/html/body/div[3]/div[1]/div[2]/div/div[2]/div[1]"
+        )
+
+        def _侧栏子菜单宿主():
+            loc = page.locator(f"xpath={_SIDEBAR_CHILD_MENU_HOST_XPATH}").first
+            if loc.count() == 0:
+                return None
+            return loc
+
+        def _点击_child_menu_item_整行(roots) -> bool:
+            """在多个根下查找 child-menu-item 整行（优先 XPath 宿主）。"""
+            for root in roots:
+                if root is None:
+                    continue
+                try:
+                    if hasattr(root, "count") and root.count() == 0:
+                        continue
+                except Exception:
+                    continue
+                row = root.locator("div.child-menu-item.click-interactive").filter(
+                    has=page.locator("div.child-menu-name", has_text=re.compile("^" + re.escape(sub) + r"\s*$"))
+                ).first
+                if row.count() == 0:
+                    row = root.locator("div.child-menu-item.click-interactive").filter(
+                        has=page.locator("div.child-menu-name", has_text=sub)
+                    ).first
+                if row.count() == 0:
+                    row = root.locator("div.child-menu-item.click-interactive").filter(has_text=sub).first
+                if row.count() == 0:
+                    continue
+                try:
+                    row.scroll_into_view_if_needed(timeout=8000)
+                    row.click(timeout=tmo, force=True)
+                    time.sleep(0.75)
+                    _关闭确认信息弹窗()
+                    print(f"✅ 侧栏已点击「{sub}」（child-menu-item 整行）")
+                    return True
+                except Exception:
+                    try:
+                        row.evaluate(
+                            "e => { e.scrollIntoView({block:'center'}); e.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true})); }"
+                        )
+                        time.sleep(0.75)
+                        _关闭确认信息弹窗()
+                        print(f"✅ 侧栏已触达「{sub}」（child-menu-item 脚本点击）")
+                        return True
+                    except Exception:
+                        continue
+            return False
+
+        def _展开工艺分组(roots) -> None:
+            for root in roots:
+                if root is None:
+                    continue
+                try:
+                    if hasattr(root, "count") and root.count() == 0:
+                        continue
+                except Exception:
+                    continue
+                try:
+                    t = root.locator("span.title:text('工艺')").first
+                    if t.count() > 0:
+                        t.scroll_into_view_if_needed(timeout=8000)
+                        t.click(timeout=tmo, force=True)
+                        time.sleep(0.55)
+                        return
+                except Exception as e:
+                    print(f"⚠️ 展开侧栏「工艺」分组失败：{e}")
+
+        host = _侧栏子菜单宿主()
+        roots_ordered = []
+        if host is not None:
+            roots_ordered.append(host)
+        roots_ordered.append(page)
+
+        # 1) 优先 XPath 宿主内整行，再全页
+        if _点击_child_menu_item_整行(roots_ordered):
+            return True
+        _展开工艺分组(roots_ordered)
+        if _点击_child_menu_item_整行(roots_ordered):
+            return True
+
+        # 2) 可选：点一级「生产管理」后再展开工艺（部分布局一级不叫 quick-name）
+        if _侧边点击一级菜单("生产管理", timeout_ms=tmo):
+            time.sleep(0.35)
+        else:
+            print("ℹ️ 侧栏未点到「生产管理」（可能已在该模块或一级入口不同），继续尝试工艺子菜单…")
+        _展开工艺分组(roots_ordered)
+        _关闭确认信息弹窗()
+        if _点击_child_menu_item_整行(roots_ordered):
+            return True
+
+        # 3) 兜底：仅点 child-menu-name（旧逻辑），仍优先 XPath 宿主
+        name_rows = []
+        if host is not None:
+            name_rows.append(host)
+        name_rows.append(page)
+        candidates = []
+        for base in name_rows:
+            candidates.extend(
+                (
+                    base.locator("div.child-menu-item.click-interactive div.child-menu-name").filter(
+                        has_text=re.compile("^" + re.escape(sub) + r"\s*$")
+                    ).first,
+                    base.locator("div.child-menu-name").filter(has_text=sub).first,
+                )
+            )
+        candidates.extend(
+            (
+                page.locator(".sidebar-container div.child-menu-name").filter(has_text=sub).first,
+                page.locator(".nest-menu .child-menu-name").filter(has_text=sub).first,
+                page.locator(".sidebar-container .el-menu-item").filter(has_text=sub).first,
+                page.locator(".el-menu-item").filter(has_text=sub).first,
+            )
+        )
+        for child in candidates:
+            if child.count() == 0:
+                continue
+            try:
+                child.scroll_into_view_if_needed(timeout=8000)
+                child.click(timeout=tmo, force=True)
+                time.sleep(0.75)
+                _关闭确认信息弹窗()
+                print(f"✅ 侧栏已点击「{sub}」")
+                return True
+            except Exception:
+                try:
+                    child.evaluate(
+                        "e => { e.scrollIntoView({block:'center'}); e.dispatchEvent(new MouseEvent('click',{bubbles:true})); }"
+                    )
+                    time.sleep(0.75)
+                    _关闭确认信息弹窗()
+                    print(f"✅ 侧栏已触达「{sub}」（脚本点击）")
+                    return True
+                except Exception:
+                    continue
+
+        try:
+            ok = page.evaluate(
+                """(sub, hostXp) => {
+                function firstByXPath(xp) {
+                    try {
+                        const r = document.evaluate(
+                            xp, document, null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                        );
+                        return r.singleNodeValue;
+                    } catch (e) { return null; }
+                }
+                const host = hostXp ? firstByXPath(hostXp) : null;
+                const scope = (host && host.nodeType === 1) ? host : document.body;
+                const rows = scope.querySelectorAll('div.child-menu-item.click-interactive');
+                for (const row of rows) {
+                    const nm = row.querySelector('div.child-menu-name');
+                    const t = (nm ? nm.innerText : row.innerText || '').replace(/\\s+/g, ' ').trim();
+                    if (t === sub || t.startsWith(sub)) {
+                        row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        return true;
+                    }
+                }
+                const root = document.querySelector('.sidebar-container')
+                    || document.querySelector('.el-menu')
+                    || document.body;
+                const els = root.querySelectorAll('div.child-menu-name, a.el-menu-item, li.el-menu-item');
+                for (const el of els) {
+                    const t = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                    if (!t) continue;
+                    if (t === sub || t.startsWith(sub)) {
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+                sub,
+                _SIDEBAR_CHILD_MENU_HOST_XPATH,
+            )
+            if ok:
+                time.sleep(0.85)
+                _关闭确认信息弹窗()
+                print(f"✅ 侧栏「{sub}」已由页面脚本兜底点击（含 XPath 宿主）")
+                return True
+        except Exception as e:
+            print(f"⚠️ 侧栏脚本兜底点击「{sub}」失败：{e}")
+
+        print(f"⚠️ 未在侧栏点到「{sub}」（请核对菜单是否改名或需先展开权限）")
+        return False
+
+    def _进入标准工序() -> bool:
+        """
+        侧边栏「生产管理 → 工艺 → 标准工序」。
+        在「工序记录报表」与期望不符并已退出工艺详情后，进入该页以便对照或维护标准工序数据。
+        """
+        print("📂 进入：工艺 -> 标准工序")
+        if _工艺侧栏展开并点击子菜单("标准工序"):
+            print("✅ 已进入「标准工序」")
+            return True
+        if _工艺侧栏展开并点击子菜单("标准工序管理"):
+            print("✅ 已进入「标准工序管理」")
+            return True
+        return False
+
+    def _详情页强制返回工艺管理列表() -> None:
+        """不依赖「工艺」筛选框检测：多点几次「返回上一页」类按钮，再面包屑回列表，关遮罩。"""
+        _关闭确认信息弹窗()
+        rx = re.compile(r"(?:<\s*)?返回\s*上一页|返回上一页")
+        backs = page.locator(
+            "button, a, .el-button, .el-button--text, span"
+        ).filter(has_text=rx)
+        for i in range(min(backs.count(), 14)):
+            el = backs.nth(i)
+            try:
+                el.click(timeout=4500, force=True)
+                time.sleep(0.5)
+            except Exception:
+                try:
+                    el.evaluate(
+                        "e => { e.scrollIntoView({block:'center'}); e.click(); }"
+                    )
+                    time.sleep(0.5)
+                except Exception:
+                    continue
+        _返回工艺管理列表页()
+        time.sleep(0.45)
+        _关闭确认信息弹窗()
+        try:
+            for _ in range(3):
+                page.keyboard.press("Escape")
+                time.sleep(0.15)
+        except Exception:
+            pass
+
     def _校验加工顺序并点击包装再验工序记录报表():
         """
         检查「加工顺序」是否仅一条且为包装（文案形如「1、包装」）；
-        符合则点击该步骤，再在右侧基本信息区校验「工序记录报表」。
+        符合则点击该「包装」步骤，切到右侧「基本信息」并读取「工序记录报表」是否与期望一致。
+        若工序记录报表与期望不符：点击「返回上一页」离开详情，并跳转侧边栏「工艺 → 标准工序」。
+        返回 (all_ok, log_lines, navigated_to_standard)；navigated_to_standard 为 True 时表示已离开工艺详情并进入标准工序，
+        调用方应跳过偏差修改/工艺升级等仍依赖详情或原列表的步骤。
         """
         expect_report = "RC-9020-01-11包装生产记录（2026.01.26）"
         lines = []
@@ -1774,8 +2011,9 @@ def 更新计划(page):
 
         if not click_pkg_ok:
             lines.append("ℹ️ 「工序记录报表」：未满足「仅一条包装」或未成功点击包装，跳过该项校验")
-            return all_ok, lines
+            return all_ok, lines, False
 
+        lines.append("ℹ️ 已点击加工顺序「包装」，在「基本信息」中核对「工序记录报表」…")
         tab = page.locator(".el-tabs__item").filter(has_text="基本信息").first
         if tab.count() > 0:
             try:
@@ -1784,19 +2022,115 @@ def 更新计划(page):
             except Exception:
                 pass
 
+        time.sleep(0.35)
         item = _取表单项按标签("工序记录报表")
         if item.count() == 0:
             all_ok = False
             lines.append("❌ 「工序记录报表」：未找到表单项")
-        else:
-            actual = _读取表单项下拉展示(item)
-            ok_r = _展示值匹配期望(actual, expect_report)
-            if not ok_r:
-                all_ok = False
-            mark = "✅" if ok_r else "❌"
-            lines.append(f"{mark} 「工序记录报表」展示：{actual!r} — 期望：{expect_report!r}")
+            return all_ok, lines, False
 
-        return all_ok, lines
+        actual = _读取表单项下拉展示(item)
+        ok_r = _工序记录报表严格匹配期望(actual, expect_report)
+        if not ok_r:
+            all_ok = False
+        mark = "✅" if ok_r else "❌"
+        lines.append(f"{mark} 「工序记录报表」展示：{actual!r} — 期望：{expect_report!r}")
+        if not ok_r:
+            lines.append(
+                "❌ 「工序记录报表」强行校验不通过：须与期望全文一致（已禁用宽松前缀/包含匹配）"
+            )
+        if ok_r:
+            return all_ok, lines, False
+
+        lines.append(
+            "🔧 「工序记录报表」与期望不符：开始离开详情并进入「标准工序」"
+        )
+        _std_nav_total = 4
+
+        def _std_nav_step(i: int, msg: str) -> None:
+            lines.append(f"   ▸ 步骤 {i}/{_std_nav_total}：{msg}")
+
+        _std_nav_step(1, "关闭可能遮挡的确认 / 提示弹窗")
+        _关闭确认信息弹窗()
+        _std_nav_step(
+            2,
+            "离开工艺详情：依次尝试「返回上一页」、面包屑「工艺管理」、浏览器后退与 Esc",
+        )
+        _详情页强制返回工艺管理列表()
+        _std_nav_step(3, "侧栏导航：展开「工艺」并在子菜单中进入「标准工序」")
+        ok_std = _进入标准工序()
+        _std_nav_step(
+            4,
+            "侧栏跳转结果：已进入「标准工序」"
+            if ok_std
+            else "侧栏跳转结果：未确认进入「标准工序」（请在侧栏手工点「标准工序」）",
+        )
+        if not ok_std:
+            print(
+                "⚠️ 自动进入「标准工序」失败；请在侧栏依次点："
+                "「生产管理」→「工艺」→「标准工序」（或「标准工序管理」）"
+            )
+        return all_ok, lines, True
+
+    def _详情页尝试点击返回上一页() -> bool:
+        """工艺详情顶栏常见「返回上一页」，优先于面包屑 / 浏览器后退。"""
+        _关闭确认信息弹窗()
+        candidates = (
+            page.get_by_role("button", name="返回上一页"),
+            page.locator("button").filter(has_text="返回上一页"),
+            page.locator("a").filter(has_text="返回上一页"),
+            page.locator(".el-button").filter(has_text="返回上一页"),
+            page.locator("span").filter(has_text="返回上一页"),
+        )
+        for loc in candidates:
+            try:
+                if loc.count() == 0:
+                    continue
+                el = loc.first
+                if not el.is_visible():
+                    continue
+                el.scroll_into_view_if_needed(timeout=5000)
+                try:
+                    el.click(timeout=6000)
+                except Exception:
+                    el.evaluate(
+                        "e => { e.scrollIntoView({ block: 'center' }); e.click(); }"
+                    )
+                time.sleep(0.55)
+                if _等待工艺管理页就绪(12000):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _进入产品bom待发布页签():
+        """从其它模块回到「产品BOM」并切到「待发布」（与流程入口一致）。"""
+        _关闭确认信息弹窗()
+        page.click("b.quick-name:text('生产管理')", timeout=8000)
+        time.sleep(0.35)
+        page.click("span.title:text('工艺')", timeout=8000)
+        time.sleep(0.35)
+        page.click("div.child-menu-name:text('产品BOM')", timeout=8000)
+        time.sleep(0.55)
+        page.click("div.el-tabs__item:text('待发布')", timeout=8000)
+        time.sleep(0.6)
+        _关闭确认信息弹窗()
+
+    def _bom待发布重头查询所有代码(excel_codes):
+        """待发布页下按 Excel 顺序逐条填入物料代码并查询（不编辑）。"""
+        for ridx, c in enumerate(excel_codes, start=1):
+            _关闭确认信息弹窗()
+            try:
+                bom_code_input.click(timeout=5000)
+            except Exception:
+                bom_code_input.click(timeout=5000, force=True)
+            bom_code_input.fill(c)
+            try:
+                page.click("button:has-text('查询')", timeout=5000)
+            except Exception:
+                page.click("button:has-text('查询')", timeout=5000, force=True)
+            print(f"🔎 待发布重头查询（{ridx}/{len(excel_codes)}）：{c}")
+            time.sleep(1.0)
 
     def _返回工艺管理列表页():
         """详情页点击工艺编号后需回到列表，否则下一轮无法填「工艺」查询。"""
@@ -1821,17 +2155,18 @@ def 更新计划(page):
             pass
         _等待工艺管理页就绪(12000)
 
-    def _工艺管理点击工艺升级():
-        """工艺管理列表工具栏「工艺升级」（与筛选区同一 `#container` 内横向按钮条，多为 `el-button`）。"""
+    def _工艺管理点击列表工具栏按钮(button_text: str) -> bool:
+        """工艺管理列表 `#container` 内横向按钮（如 偏差修改、工艺升级），多为 `el-button`。"""
         _关闭确认信息弹窗()
         scoped = page.locator("#container")
+        bt = (button_text or "").strip()
         groups = (
-            scoped.get_by_role("button", name="工艺升级"),
-            scoped.locator("button.el-button").filter(has_text="工艺升级"),
-            scoped.locator("button:has-text('工艺升级')"),
-            scoped.locator(".el-button").filter(has_text="工艺升级"),
-            page.get_by_role("button", name="工艺升级"),
-            page.locator("button.el-button").filter(has_text="工艺升级"),
+            scoped.get_by_role("button", name=bt),
+            scoped.locator("button.el-button").filter(has_text=bt),
+            scoped.locator("button").filter(has_text=bt),
+            scoped.locator(".el-button").filter(has_text=bt),
+            page.get_by_role("button", name=bt),
+            page.locator("button.el-button").filter(has_text=bt),
         )
 
         def _try_click(btn) -> bool:
@@ -1876,9 +2211,9 @@ def 更新计划(page):
                 while time.time() < deadline:
                     try:
                         role_dlgs = page.get_by_role("dialog")
-                        for i in range(min(role_dlgs.count(), 12)):
+                        for j in range(min(role_dlgs.count(), 12)):
                             try:
-                                if role_dlgs.nth(i).is_visible():
+                                if role_dlgs.nth(j).is_visible():
                                     saw_follow = True
                                     break
                             except Exception:
@@ -1889,9 +2224,9 @@ def 更新计划(page):
                         break
                     for sel in follow_selectors:
                         locs = page.locator(sel)
-                        for i in range(min(locs.count(), 12)):
+                        for j in range(min(locs.count(), 12)):
                             try:
-                                if locs.nth(i).is_visible():
+                                if locs.nth(j).is_visible():
                                     saw_follow = True
                                     break
                             except Exception:
@@ -1902,18 +2237,24 @@ def 更新计划(page):
                         break
                     time.sleep(0.12)
                 if saw_follow:
-                    print("✅ 已点击「工艺升级」（已出现确认框或对话框，最长等待约 14s）")
+                    print(f"✅ 已点击「{bt}」（已出现确认框或对话框，最长等待约 14s）")
                 else:
                     print(
-                        "⚠️ 已派发「工艺升级」点击，但在约 14s 内仍未检测到可见对话框；"
+                        f"⚠️ 已派发「{bt}」点击，但在约 14s 内仍未检测到可见对话框；"
                         "若界面较慢或样式不同请人工点此按钮并确认"
                     )
                 return True
-        print("⚠️ 未找到可点击的「工艺升级」按钮（可见且可用）")
+        print(f"⚠️ 未找到可点击的「{bt}」按钮（可见且可用）")
         return False
 
-    def _工艺升级后尝试点击确定(timeout_ms: int = 14000) -> None:
-        """工艺升级后常见二次确认（MessageBox / Dialog 底部确定），关闭后才能稳定回到列表或再进详情。"""
+    def _工艺管理点击偏差修改() -> bool:
+        return _工艺管理点击列表工具栏按钮("偏差修改")
+
+    def _工艺管理点击工艺升级() -> bool:
+        return _工艺管理点击列表工具栏按钮("工艺升级")
+
+    def _工艺列表工具栏操作后尝试点击确定(timeout_ms: int = 14000) -> None:
+        """列表工具栏「偏差修改」「工艺升级」等操作后的 MessageBox / Dialog 底部「确定」。"""
         start = time.time()
         deadline = start + timeout_ms / 1000.0
         idle_rounds = 0
@@ -1976,24 +2317,73 @@ def 更新计划(page):
             except Exception:
                 pass
 
-    def _侧边点击一级菜单(module_name: str, timeout_ms: int = 15000) -> bool:
-        """一级侧边菜单（如 生产管理）：`b.quick-name` 在折叠/滚动后可能失效，做多选择器兜底。"""
-        candidates = (
-            page.locator("b.quick-name").filter(has_text=module_name).first,
-            page.locator(".el-submenu__title").filter(has_text=module_name).first,
-            page.locator(".el-menu-item").filter(has_text=module_name).first,
-            page.locator(".sidebar-container .el-menu").get_by_text(module_name, exact=True).first,
-        )
-        for loc in candidates:
+    def _工艺管理切换待发布页签() -> bool:
+        """工艺管理子页签「待发布(…)」：与产品 BOM 的待发布不是同一套页签。"""
+        _关闭确认信息弹窗()
+        for shell in (page.locator("#container"), page):
+            tab = shell.locator("div.el-tabs__item").filter(has_text="待发布").first
+            if tab.count() == 0:
+                continue
             try:
-                if loc.count() == 0:
+                if not tab.is_visible():
                     continue
-                loc.scroll_into_view_if_needed(timeout=8000)
-                loc.click(timeout=timeout_ms)
+                tab.scroll_into_view_if_needed(timeout=6000)
+                tab.click(timeout=6000)
+                time.sleep(0.65)
                 return True
             except Exception:
                 continue
         return False
+
+    def _工艺管理待发布查询并打开编辑(code: str) -> bool:
+        """
+        偏差修改提交后工艺常落在「待发布」：需先切该页签、用工艺条件查询，再点行内「编辑」进入可改表单。
+        """
+        if not _工艺管理切换待发布页签():
+            print(f"⚠️ 代码 {code}：未找到或未点开工艺管理「待发布」页签")
+            return False
+        _关闭确认信息弹窗()
+        proc_input = _工艺搜索输入框()
+        qbtn = _工艺管理查询按钮()
+        if not _工艺筛选框写入文本(proc_input, code):
+            try:
+                proc_input.click(timeout=8000, force=True)
+            except Exception:
+                pass
+            proc_input.fill(code)
+        try:
+            qbtn.click(timeout=8000)
+        except Exception:
+            _关闭确认信息弹窗()
+            qbtn = _工艺管理查询按钮()
+            qbtn.click(timeout=8000, force=True)
+        time.sleep(1.0)
+        rows_loc = _工艺管理页表格数据行()
+        for _ in range(35):
+            if rows_loc.count() > 0:
+                break
+            time.sleep(0.15)
+            rows_loc = _工艺管理页表格数据行()
+        if rows_loc.count() == 0:
+            print(f"⚠️ 代码 {code}：工艺管理「待发布」下查询无结果，无法点编辑")
+            return False
+        target = None
+        tidx = None
+        n = rows_loc.count()
+        for i in range(n):
+            r = rows_loc.nth(i)
+            if not _行包含半成品或bcp(r):
+                target, tidx = r, i
+                break
+        if target is None or tidx is None:
+            print(f"⚠️ 代码 {code}：待发布查询结果均为半成品/BCP，跳过编辑")
+            return False
+        if not _勾选并点击编辑(target, tidx):
+            print(f"⚠️ 代码 {code}：待发布列表未能勾选并点击「编辑」")
+            return False
+        print(f"✅ 代码 {code}：已从工艺管理「待发布」进入编辑页")
+        time.sleep(0.75)
+        return True
 
     def _进入工艺管理():
         """
@@ -2067,8 +2457,113 @@ def 更新计划(page):
                 "未能进入「工艺管理」：关闭确认弹窗后仍未出现「工艺」筛选输入框（已排除「请输入物料代码」）。"
             )
 
+    def _工艺管理详情修正并重验(code: str):
+        """
+        列表勾选后执行「偏差修改」或「工艺升级」等：等待详情 → 自动修正 → 复检。
+        返回 (detail_ok, step_ok)。
+        """
+        print(
+            f"   [{code}] (1/3) 等待工艺详情表单就绪"
+            f"（操作后页面通常已在详情，无需再点工艺编号）…"
+        )
+        time.sleep(0.85)
+        if not _等待工艺详情表单就绪(20000):
+            print(
+                f"⚠️ 代码 {code}：(1/3) 超时：未检测到详情表单；"
+                f"若界面仍在列表请先手工进入该工艺详情后再跑本轮"
+            )
+            return False, False
+        print(f"   [{code}]      ✅ 表单已就绪")
+        print(f"   [{code}] (2/3) 修正报表三项 + 加工顺序 + 保存…")
+        _尝试修复工艺详情页(code)
+        print(f"   [{code}] (3/3) 修正后复检（三项报表 + 加工顺序 + 工序记录报表）…")
+        if not _等待工艺详情表单就绪(18000):
+            print(f"⚠️ 代码 {code}：(3/3) 修正动作后详情表单仍未就绪")
+            return False, False
+        ok3b, detail_lines_b = _校验工艺基本信息三项报表字段()
+        for ln in detail_lines_b:
+            print(ln)
+        ok_step_b, step_lines_b, nav_std_b = _校验加工顺序并点击包装再验工序记录报表()
+        for ln in step_lines_b:
+            print(ln)
+        if nav_std_b:
+            return False, False
+        return ok3b, ok_step_b
+
+    def _工艺管理待发布编辑后修正并发布(code: str) -> None:
+        """
+        从工艺管理「待发布」列表进入编辑且表单已打开后：
+        与详情路径一致做三项/加工顺序检查、自动修正与保存，再回到列表勾选当前查询行并点工具栏「发布」。
+        """
+        print(f"🔧 代码 {code}：待发布编辑页 — 检查、自动修正与保存复检…")
+        detail_ok, step_ok = _工艺管理详情修正并重验(code)
+        if detail_ok and step_ok:
+            print(f"✅ 代码 {code}：待发布编辑页修正后校验通过")
+        else:
+            print(
+                f"⚠️ 代码 {code}：待发布编辑页修正后仍有不符，"
+                f"已尽量保存；将继续返回列表并尝试发布，请人工复核"
+            )
+
+        print(f"📤 代码 {code}：返回工艺管理列表并在「待发布」下尝试发布…")
+        if not _详情页尝试点击返回上一页():
+            _返回工艺管理列表页()
+        else:
+            time.sleep(0.35)
+            _关闭确认信息弹窗()
+            if not _等待工艺管理页就绪(12000):
+                _返回工艺管理列表页()
+        time.sleep(0.55)
+        _关闭确认信息弹窗()
+
+        if not _工艺管理切换待发布页签():
+            print(f"⚠️ 代码 {code}：未能切回工艺管理「待发布」页签，跳过发布")
+            return
+
+        _关闭确认信息弹窗()
+        proc_r = _工艺搜索输入框()
+        qbtn_r = _工艺管理查询按钮()
+        if not _工艺筛选框写入文本(proc_r, code):
+            try:
+                proc_r.click(timeout=8000, force=True)
+            except Exception:
+                pass
+            proc_r.fill(code)
+        try:
+            qbtn_r.click(timeout=8000)
+        except Exception:
+            _关闭确认信息弹窗()
+            qbtn_r = _工艺管理查询按钮()
+            qbtn_r.click(timeout=8000, force=True)
+        time.sleep(1.0)
+
+        rows_r = _工艺管理页表格数据行()
+        for _ in range(35):
+            if rows_r.count() > 0:
+                break
+            time.sleep(0.15)
+            rows_r = _工艺管理页表格数据行()
+        if rows_r.count() == 0:
+            print(f"⚠️ 代码 {code}：返回「待发布」后查询无行，无法发布")
+            return
+
+        if not _勾选表格行首列(rows_r.first, 0, use_bom_row_xpath=False):
+            print(f"⚠️ 代码 {code}：发布前勾选失败")
+            return
+
+        time.sleep(0.35)
+        if _工艺管理点击列表工具栏按钮("发布"):
+            _工艺列表工具栏操作后尝试点击确定(16000)
+            _关闭确认信息弹窗()
+            print(f"✅ 代码 {code}：已尝试完成工艺管理「待发布」发布")
+        else:
+            print(
+                f"⚠️ 代码 {code}：未点到可用的「发布」按钮"
+                f"（可能需先保存、未勾选或按钮禁用）"
+            )
+
     def _工艺管理依次搜索并点击工艺编号(excel_codes):
-        """按 Excel 代码依次在「工艺」条件查询，点击结果中不含半成品/BCP 行的工艺编号。"""
+        """按 Excel 代码依次在「工艺」条件查询：先检视是否存在；不符则优先「偏差修改」修正，不行再「工艺升级」。"""
         _进入工艺管理()
         for gidx, code in enumerate(excel_codes, start=1):
             _关闭确认信息弹窗()
@@ -2094,8 +2589,11 @@ def 更新计划(page):
                 time.sleep(0.15)
                 rows_loc = _工艺管理页表格数据行()
             if rows_loc.count() == 0:
-                print(f"ℹ️ 工艺管理无查询结果，跳过：{code}")
+                print(f"ℹ️ 工艺管理无查询结果（不存在该工艺条件），跳过：{code}")
                 continue
+            print(
+                f"✅ 工艺管理存在查询结果：共 {rows_loc.count()} 行，继续检视（{code}）"
+            )
             target = None
             target_row_index = None
             n = rows_loc.count()
@@ -2107,6 +2605,59 @@ def 更新计划(page):
                     break
             if target is None:
                 print(f"⏭️ 工艺管理结果均为半成品/BCP，跳过：{code}")
+                if gidx == len(excel_codes):
+                    print(
+                        f"📋 本轮最后一条（{gidx}/{len(excel_codes)}），"
+                        f"跳转工艺管理「待发布」并按 {code} 查询…"
+                    )
+                    if not _工艺管理切换待发布页签():
+                        print("⚠️ 未能切换到工艺管理「待发布」页签")
+                    else:
+                        _关闭确认信息弹窗()
+                        proc_tp = _工艺搜索输入框()
+                        qbtn_tp = _工艺管理查询按钮()
+                        if not _工艺筛选框写入文本(proc_tp, code):
+                            try:
+                                proc_tp.click(timeout=8000, force=True)
+                            except Exception:
+                                pass
+                            proc_tp.fill(code)
+                        try:
+                            qbtn_tp.click(timeout=8000)
+                        except Exception:
+                            _关闭确认信息弹窗()
+                            qbtn_tp = _工艺管理查询按钮()
+                            qbtn_tp.click(timeout=8000, force=True)
+                        time.sleep(1.0)
+                        print(f"✅ 已停留在「待发布」并完成查询：{code}")
+                        rows_pub = _工艺管理页表格数据行()
+                        for _ in range(35):
+                            if rows_pub.count() > 0:
+                                break
+                            time.sleep(0.15)
+                            rows_pub = _工艺管理页表格数据行()
+                        if rows_pub.count() == 0:
+                            print(
+                                f"⚠️ 代码 {code}：「待发布」查询后无数据行，无法点编辑"
+                            )
+                        else:
+                            tp_target = None
+                            tp_idx = None
+                            for i in range(rows_pub.count()):
+                                rr = rows_pub.nth(i)
+                                if not _行包含半成品或bcp(rr):
+                                    tp_target, tp_idx = rr, i
+                                    break
+                            if tp_target is None:
+                                tp_target, tp_idx = rows_pub.nth(0), 0
+                            if _勾选并点击编辑(tp_target, tp_idx):
+                                print(f"✅ 代码 {code}：已在「待发布」点击编辑进入表单")
+                                time.sleep(0.75)
+                                _工艺管理待发布编辑后修正并发布(code)
+                            else:
+                                print(
+                                    f"⚠️ 代码 {code}：「待发布」列表未能勾选并点击「编辑」"
+                                )
                 continue
             if not _点击目标行的工艺编号(target, code):
                 print(f"⚠️ 工艺管理：未能点击工艺编号（{code}）")
@@ -2115,6 +2666,7 @@ def 更新计划(page):
             time.sleep(0.85)
             detail_ok = True
             step_ok = True
+            skip_deviation = False
             if not _等待工艺详情表单就绪(18000):
                 print(f"⚠️ 代码 {code}：未检测到工艺详情表单（批记录报表），视为校验不符")
                 detail_ok = False
@@ -2128,23 +2680,41 @@ def 更新计划(page):
                     print(f"✅ 代码 {code}：批记录报表 / 指令报表 / 指令参数记录 均与期望一致（含截断宽松匹配）")
                 else:
                     print(f"⚠️ 代码 {code}：上述三项与期望不一致或缺少表单项，请人工核对")
-                ok_step, step_lines = _校验加工顺序并点击包装再验工序记录报表()
+                ok_step, step_lines, skip_deviation = _校验加工顺序并点击包装再验工序记录报表()
                 for ln in step_lines:
                     print(ln)
                 step_ok = ok_step
-                if ok_step:
+                if skip_deviation:
+                    step_ok = False
+                if ok_step and not skip_deviation:
                     print(
                         f"✅ 代码 {code}：加工顺序（单条包装）及工序记录报表校验通过（含截断宽松匹配）"
+                    )
+                elif skip_deviation:
+                    print(
+                        f"❌ 代码 {code}：工序记录报表强行校验不通过，已尝试退出详情并进入「标准工序」"
                     )
                 else:
                     print(f"⚠️ 代码 {code}：加工顺序或工序记录报表与期望不符，请人工核对")
 
-            if not detail_ok or not step_ok:
+            if skip_deviation:
                 print(
-                    f"🔧 代码 {code}：批记录报表 / 指令报表 / 指令参数记录 / 加工顺序（含工序记录报表）"
-                    f"有一项不符，返回列表后勾选并点击「工艺升级」，再在升级完成后尝试自动修正"
+                    f"ℹ️ 代码 {code}：因「工序记录报表」不符已退出详情并进入「标准工序」，"
+                    f"跳过本轮自动「偏差修改 / 工艺升级」"
                 )
-                _返回工艺管理列表页()
+                _进入工艺管理()
+            elif not detail_ok or not step_ok:
+                print(
+                    f"🔧 代码 {code}：初检未通过；返回列表后"
+                    f"先尝试「偏差修改」+ 自动修正，仍不符再「工艺升级」+ 自动修正"
+                )
+                if not _详情页尝试点击返回上一页():
+                    _返回工艺管理列表页()
+                else:
+                    time.sleep(0.35)
+                    _关闭确认信息弹窗()
+                    if not _等待工艺管理页就绪(12000):
+                        _返回工艺管理列表页()
                 time.sleep(0.55)
                 _关闭确认信息弹窗()
                 rows_again = _工艺管理页表格数据行()
@@ -2153,31 +2723,71 @@ def 更新计划(page):
                         break
                     time.sleep(0.15)
                     rows_again = _工艺管理页表格数据行()
-                if target_row_index is not None and rows_again.count() > target_row_index:
+                if target_row_index is None or rows_again.count() <= target_row_index:
+                    print(
+                        f"⚠️ 代码 {code}：返回列表后无法定位原数据行（期望行号 {target_row_index}），"
+                        f"无法执行偏差修改 / 工艺升级"
+                    )
+                else:
                     pick = rows_again.nth(target_row_index)
-                    if _勾选表格行首列(pick, target_row_index, use_bom_row_xpath=False):
-                        if _工艺管理点击工艺升级():
-                            _工艺升级后尝试点击确定(16000)
+                    if not _勾选表格行首列(pick, target_row_index, use_bom_row_xpath=False):
+                        print(
+                            f"⚠️ 代码 {code}：返回列表后勾选失败，请手动勾选后再执行偏差修改或工艺升级"
+                        )
+                    else:
+                        tried_pc = False
+                        print(f"🔧 代码 {code}：① 尝试「偏差修改」…")
+                        if _工艺管理点击偏差修改():
+                            tried_pc = True
+                            _工艺列表工具栏操作后尝试点击确定(16000)
                             time.sleep(0.75)
                             _关闭确认信息弹窗()
                             print(
-                                f"🔧 代码 {code}：「工艺升级」流程已执行，随后尝试自动修正报表与加工顺序…"
+                                f"🔧 代码 {code}：「偏差修改」已执行，"
+                                f"进入工艺管理「待发布」查询并点「编辑」后再自动修正与复检…"
                             )
-                            if _工艺升级后重新进入详情(code, pick):
-                                time.sleep(0.85)
-                                if _等待工艺详情表单就绪(20000):
-                                    _尝试修复工艺详情页()
-                                    if _等待工艺详情表单就绪(18000):
-                                        ok3b, detail_lines_b = _校验工艺基本信息三项报表字段()
-                                        for ln in detail_lines_b:
-                                            print(ln)
-                                        detail_ok = ok3b
-                                        ok_step_b, step_lines_b = (
-                                            _校验加工顺序并点击包装再验工序记录报表()
+                            if not _工艺管理待发布查询并打开编辑(code):
+                                print(
+                                    f"ℹ️ 代码 {code}：待发布编辑入口未打开，"
+                                    f"仍在当前页尝试等待详情并复检（可能超时）…"
+                                )
+                            detail_ok, step_ok = _工艺管理详情修正并重验(code)
+                            if detail_ok and step_ok:
+                                print(f"✅ 代码 {code}：偏差修改并修正后校验通过")
+                        else:
+                            print(
+                                f"ℹ️ 代码 {code}：未找到可点击的「偏差修改」"
+                                f"（将尝试「工艺升级」）"
+                            )
+
+                        if not detail_ok or not step_ok:
+                            why = "偏差修改后仍不符" if tried_pc else "偏差修改不可用或未改善"
+                            print(f"🔧 代码 {code}：② {why}，尝试「工艺升级」…")
+                            _返回工艺管理列表页()
+                            time.sleep(0.55)
+                            _关闭确认信息弹窗()
+                            rows_b = _工艺管理页表格数据行()
+                            for _ in range(35):
+                                if rows_b.count() > 0:
+                                    break
+                                time.sleep(0.15)
+                                rows_b = _工艺管理页表格数据行()
+                            if (
+                                target_row_index is not None
+                                and rows_b.count() > target_row_index
+                            ):
+                                pick2 = rows_b.nth(target_row_index)
+                                if _勾选表格行首列(
+                                    pick2, target_row_index, use_bom_row_xpath=False
+                                ):
+                                    if _工艺管理点击工艺升级():
+                                        _工艺列表工具栏操作后尝试点击确定(16000)
+                                        time.sleep(0.75)
+                                        _关闭确认信息弹窗()
+                                        print(
+                                            f"🔧 代码 {code}：「工艺升级」已执行，开始自动修正与复检…"
                                         )
-                                        for ln in step_lines_b:
-                                            print(ln)
-                                        step_ok = ok_step_b
+                                        detail_ok, step_ok = _工艺管理详情修正并重验(code)
                                         if detail_ok and step_ok:
                                             print(
                                                 f"✅ 代码 {code}：工艺升级并修正后校验通过"
@@ -2188,27 +2798,28 @@ def 更新计划(page):
                                             )
                                     else:
                                         print(
-                                            f"⚠️ 代码 {code}：修正动作后详情表单仍未就绪"
+                                            f"⚠️ 代码 {code}：未能点击「工艺升级」"
                                         )
                                 else:
                                     print(
-                                        f"⚠️ 代码 {code}：升级后再次进入详情未检测到表单就绪"
+                                        f"⚠️ 代码 {code}：工艺升级前勾选失败"
                                     )
                             else:
                                 print(
-                                    f"⚠️ 代码 {code}：升级后未能再次点击工艺编号进入详情，无法自动修正"
+                                    f"⚠️ 代码 {code}：工艺升级前列表行不可用（期望行号 {target_row_index}）"
                                 )
-                        else:
-                            print(f"⚠️ 代码 {code}：未能点击「工艺升级」")
-                    else:
-                        print(f"⚠️ 代码 {code}：返回列表后勾选失败，请手动勾选并「工艺升级」")
-                else:
-                    print(
-                        f"⚠️ 代码 {code}：返回列表后无法定位原数据行（期望行号 {target_row_index}），"
-                        f"请手动勾选并「工艺升级」"
-                    )
 
-            _返回工艺管理列表页()
+            if not skip_deviation:
+                _返回工艺管理列表页()
+                if gidx == len(excel_codes):
+                    print(
+                        "📋 工艺管理本轮最后一条代码已处理，跳转产品BOM「待发布」并按 Excel 重头查询…"
+                    )
+                    try:
+                        _进入产品bom待发布页签()
+                        _bom待发布重头查询所有代码(excel_codes)
+                    except Exception as e:
+                        print(f"⚠️ 跳转待发布并重头查询失败：{e}")
 
     processed_any = False
     for idx, code in enumerate(codes, start=1):
